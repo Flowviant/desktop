@@ -3,8 +3,48 @@
   "productName": "Flowviant",
   "version": "0.0.1",
   "identifier": "com.flowviant.desktop",
-  "build": { "beforeDevCommand": "npm run web:dev --workspace desktop", "devUrl": "http://localhost:1420", "beforeBuildCommand": "npm run web:build --workspace desktop", "frontendDist": "../dist" },
-  "app": { "windows": [{ "label": "main", "title": "Machines · Flowviant", "width": 380, "height": 520, "minWidth": 360, "minHeight": 420, "visible": false }], "security": { "csp": null } },
-  "bundle": { "active": true, "targets": ["nsis"], "icon": ["icons/icon.png", "icons/icon.ico"], "resources": ["resources/flowviant-linux-x64", "resources/daemon-version.txt"] },
-  "plugins": { "updater": { "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQ2OUNFQzdENjQ0NDE5MgpSV1NTUVVUV3g4NXBEUitaTVZqUnhzRDd5RTF5MWVYRFpNQ1ZwaDBQSEFRd1M2TGFpREVuaElRdgo=", "endpoints": ["https://api.flowviant.com/desktop/latest.json"] } }
+  "build": {
+    "beforeDevCommand": "npm run web:dev --workspace desktop",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run web:build --workspace desktop",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Machines \u00b7 Flowviant",
+        "width": 380,
+        "height": 520,
+        "minWidth": 360,
+        "minHeight": 420,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/icon.png",
+      "icons/icon.ico"
+    ],
+    "resources": [
+      "resources/flowviant-linux-x64",
+      "resources/daemon-version.txt"
+    ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQ2OUNFQzdENjQ0NDE5MgpSV1NTUVVUV3g4NXBEUitaTVZqUnhzRDd5RTF5MWVYRFpNQ1ZwaDBQSEFRd1M2TGFpREVuaElRdgo=",
+      "endpoints": [
+        "https://api.flowviant.com/desktop/latest.json"
+      ]
+    }
+  }
 }
