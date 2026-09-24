@@ -37,7 +37,12 @@
     "resources": [
       "resources/flowviant-linux-x64",
       "resources/daemon-version.txt"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "compression": "lzma"
+      }
+    }
   },
   "plugins": {
     "updater": {
