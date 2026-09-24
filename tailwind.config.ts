@@ -1,0 +1,2 @@
+import type { Config } from 'tailwindcss';
+export default { darkMode: ['class'], content: ['./index.html', './src/**/*.{ts,tsx}'], theme: { extend: { colors: { ink: '#1a1e28', paper: '#fcfcfd', line: '#dee1e7', quiet: '#676f7e', success: '#26784f', warning: '#936310' }, fontFamily: { sans: ['Switzer', 'Segoe UI', 'sans-serif'], mono: ['ui-monospace', 'Consolas', 'monospace'] } } }, plugins: [] } satisfies Config;
