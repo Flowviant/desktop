@@ -1,6 +1,6 @@
 # Flowviant desktop
 
-Windows first: a Tauri 2 tray that bundles the Linux x64 daemon for projects in WSL. Pick `\\wsl$\<distro>\…` or `\\wsl.localhost\<distro>\…`. A Windows folder is declined until a native Windows daemon exists. The tray starts at login by default. Closing the window hides it; Quit stops the daemons this app started on this box.
+Windows first: a Tauri 2 tray that bundles the Linux x64 daemon for projects in WSL. Pick `\\wsl$\<distro>\…` or `\\wsl.localhost\<distro>\…`. A Windows folder is declined until a native Windows daemon exists. The tray starts at login by default (in the tray, via `--autostart`); opening the app yourself opens its window. The window and the tray popover are one card (the Machines App design, frames 1c/1d/1e). Connect a project picks the folder, then opens `app.flowviant.com/connect?code=…`, where you pick the project and approve; a failed login shows the daemon's own last words. Closing the window hides it; Quit stops the daemons this app started on this box. Release builds are GUI-subsystem and start every `wsl.exe` with `CREATE_NO_WINDOW`, so no console window appears.
 
 ## Uninstall
 

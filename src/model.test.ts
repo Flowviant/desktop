@@ -30,7 +30,7 @@ describe('desktop contract', () => {
     for (const event of ['serving', 'stopped', 'limit-cleared', 'agent-turn', 'card-delivered']) expect(shouldNotify({ event })).toBe(false);
   });
   it('keeps user-facing copy on the binary command', () => {
-    const source = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8');
+    const source = readFileSync(new URL('./tray/TrayPopover.tsx', import.meta.url), 'utf8');
     expect(source).not.toMatch(/npx/i);
   });
 });

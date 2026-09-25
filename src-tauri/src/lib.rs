@@ -27,8 +27,20 @@ fn save_connections(app: &AppHandle) -> Result<(), String> {
     fs::write(path, serde_json::to_vec(&rows).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
 }
 
+/// Every wsl.exe this app starts is a console program; from a GUI process each
+/// one would flash its own console window unless told not to.
+fn quiet(mut cmd: Command) -> Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 fn wsl(distro: &str, dir: Option<&str>, args: &[&str]) -> Command {
-    let mut cmd = Command::new("wsl.exe");
+    let mut cmd = quiet(Command::new("wsl.exe"));
     cmd.args(["-d", distro]);
     if let Some(dir) = dir { cmd.args(["--cd", dir]); }
     cmd.arg("--").args(args);
@@ -79,9 +91,11 @@ fn parse_wsl_distros(output: &[u8]) -> Vec<String> {
 }
 
 fn wsl_distros() -> Vec<String> {
-    let Ok(output) = Command::new("wsl.exe").args(["--list", "--quiet"]).output() else { return Vec::new() };
+    let Ok(output) = quiet(Command::new("wsl.exe")).args(["--list", "--quiet"]).output() else { return Vec::new() };
     if !output.status.success() { return Vec::new(); }
-    parse_wsl_distros(&output.stdout)
+    // Docker Desktop's distros are not places anyone keeps a checkout, and
+    // probing them on every refresh only costs time.
+    parse_wsl_distros(&output.stdout).into_iter().filter(|name| !name.starts_with("docker-desktop")).collect()
 }
 
 fn merge_cleanup_distros(saved: &[Connection], discovered: Vec<String>) -> Vec<String> {
@@ -137,7 +151,7 @@ pub fn uninstall_cleanup() {
         .and_then(|base| fs::read(PathBuf::from(base).join("com.flowviant.desktop").join("connections.json")).ok())
         .and_then(|data| serde_json::from_slice::<Vec<Connection>>(&data).ok())
         .unwrap_or_default();
-    let mut list = Command::new("wsl.exe");
+    let mut list = quiet(Command::new("wsl.exe"));
     list.args(["--list", "--quiet"]);
     let discovered = cleanup_output(list, deadline, true).map(|output| parse_wsl_distros(&output)).unwrap_or_default()
         .into_iter().filter(|distro| cleanup_wsl(distro, &["sh", "-c", "test -f \"$HOME/.flowviant/bin/flowviant\""], deadline, false).is_ok())
@@ -252,7 +266,7 @@ fn connection(app: &AppHandle, id: &str) -> Result<Connection, String> {
     app.state::<Controller>().connections.lock().map_err(|e| e.to_string())?.iter().find(|c| c.id == id).cloned().ok_or_else(|| "Project is not connected on this box".into())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn status(app: AppHandle, remote: Option<bool>) -> Result<Value, String> {
     let known = app.state::<Controller>().connections.lock().map_err(|e| e.to_string())?.clone();
     let mut distros: HashSet<_> = known.iter().map(|c| c.distro.clone()).collect();
@@ -294,23 +308,68 @@ fn status(app: AppHandle, remote: Option<bool>) -> Result<Value, String> {
     Ok(json!({"schema":1, "version":version, "projects":projects, "runtimes":runtimes, "cli":cli}))
 }
 
-#[tauri::command]
+/// A device code as `flowviant login` prints it (`MJBG-JCX75H`).
+fn valid_code(code: &str) -> bool {
+    !code.is_empty() && code.len() <= 16 && code.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+/// The web page that takes the code, asks which project, and approves it.
+fn connect_url(code: &str) -> String { format!("https://app.flowviant.com/connect?code={code}") }
+
+/// One stderr line as a person can read it: wsl.exe's own errors arrive as
+/// UTF-16 (NULs between the letters) and the daemon may colour its output.
+fn readable(line: &str) -> String {
+    let mut out = String::new();
+    let mut chars = line.chars().filter(|c| *c != '\0').peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            if chars.peek() == Some(&'[') { chars.next(); while let Some(n) = chars.next() { if n.is_ascii_alphabetic() { break; } } }
+            continue;
+        }
+        out.push(c);
+    }
+    out.trim().to_string()
+}
+
+#[tauri::command(async)]
+fn open_connect_page(app: AppHandle, code: String) -> Result<(), String> {
+    if !valid_code(&code) { return Err("That code isn't one Flowviant printed".into()); }
+    app.opener().open_url(connect_url(&code), None::<&str>).map_err(|e| e.to_string())
+}
+
+#[tauri::command(async)]
 fn connect(app: AppHandle, folder: String) -> Result<(), String> {
     let (distro, dir) = parse_wsl_folder(&folder)?;
     ensure_binary(&app, &distro)?;
     thread::spawn(move || {
-        let binary = match binary_path(&distro) { Ok(path) => path, Err(e) => { let _ = app.emit("login-event", json!({"event":"error","message":e})); return; } };
+        let fail = |message: String| { let _ = app.emit("login-event", json!({"event":"error","message":message})); };
+        let binary = match binary_path(&distro) { Ok(path) => path, Err(e) => { fail(e); return; } };
         let mut child = match wsl(&distro, Some(&dir), &[&binary, "login", "--json", "--dir", &dir, "--no-start"])
-            .stdout(Stdio::piped()).stderr(Stdio::null()).spawn() {
-            Ok(child) => child, Err(e) => { let _ = app.emit("login-event", json!({"event":"error","message":e.to_string()})); return; }
+            .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
+            Ok(child) => child, Err(e) => { fail(e.to_string()); return; }
         };
+        // Drained on its own thread so a chatty stderr can never stall stdout;
+        // its last lines are the reason when the login ends without one.
+        let stderr = child.stderr.take().map(|err| thread::spawn(move || {
+            let mut tail: Vec<String> = Vec::new();
+            for line in BufReader::new(err).lines().map_while(Result::ok) {
+                let line = readable(&line);
+                if line.is_empty() { continue; }
+                tail.push(line);
+                if tail.len() > 5 { tail.remove(0); }
+            }
+            tail
+        }));
         let mut completed = false;
         if let Some(stdout) = child.stdout.take() {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                if let Ok(event) = serde_json::from_str::<Value>(&line) {
+                if let Ok(event) = serde_json::from_str::<Value>(&readable(&line)) {
                     if event["event"] == "open_url" {
-                        if let Some(url) = event["url"].as_str() {
-                            if url == "https://app.flowviant.com" || url.starts_with("https://app.flowviant.com/") { let _ = app.opener().open_url(url, None::<&str>); }
+                        match event["code"].as_str().filter(|code| valid_code(code)) {
+                            Some(code) => { let _ = app.opener().open_url(connect_url(code), None::<&str>); }
+                            None => if let Some(url) = event["url"].as_str() {
+                                if url == "https://app.flowviant.com" || url.starts_with("https://app.flowviant.com/") { let _ = app.opener().open_url(url, None::<&str>); }
+                            },
                         }
                     }
                     if event["event"] == "error" { completed = true; }
@@ -323,21 +382,26 @@ fn connect(app: AppHandle, folder: String) -> Result<(), String> {
                                 rows.push(row.clone());
                             }
                             let _ = save_connections(&app);
-                            let _ = start_one(&app, row);
+                            if let Err(e) = start_one(&app, row) { fail(format!("Connected, but the daemon did not start: {e}")); }
                         }
                     }
                     let _ = app.emit("login-event", event);
                 }
             }
         }
-        let _ = child.wait();
-        if !completed { let _ = app.emit("login-event", json!({"event":"error", "message":"Connection was not completed"})); }
+        let status = child.wait();
+        let tail = stderr.and_then(|handle| handle.join().ok()).unwrap_or_default();
+        if !completed {
+            let reason = tail.last().cloned()
+                .or_else(|| status.ok().and_then(|s| s.code()).filter(|code| *code != 0).map(|code| format!("flowviant exited with code {code}")));
+            fail(match reason { Some(reason) => format!("Connection was not completed: {reason}"), None => "Connection was not completed".into() });
+        }
         let _ = app.emit("status-changed", ());
     });
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn project_action(app: AppHandle, id: String, action: String) -> Result<(), String> {
     let row = connection(&app, &id)?;
     let binary = binary_path(&row.distro)?;
@@ -366,7 +430,7 @@ fn valid_route_id(value: &str) -> bool {
     !value.is_empty() && value.len() <= 64 && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn open_project(app: AppHandle, id: String, page: String, agent: Option<String>) -> Result<(), String> {
     if !valid_route_id(&id) || agent.as_deref().is_some_and(|value| !valid_route_id(value)) { return Err("Invalid project or agent ID".into()); }
     let row = connection(&app, &id)?;
@@ -407,11 +471,24 @@ fn hide_tray_window(app: &AppHandle) {
 #[tauri::command]
 fn hide_tray(app: AppHandle) { hide_tray_window(&app); }
 
-#[tauri::command]
-fn show_main(app: AppHandle) {
-    hide_tray_window(&app);
-    if let Some(window) = app.get_webview_window("main") { let _ = window.show(); let _ = window.set_focus(); }
+fn show_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") { let _ = window.unminimize(); let _ = window.show(); let _ = window.set_focus(); }
+    let _ = app.emit("main-visible", true);
 }
+
+/// `connect: true` is the popover's Connect a project: the folder picker is a
+/// dialog, and a dialog would blur (and so close) the popover that asked for it,
+/// so the window runs the flow.
+#[tauri::command]
+fn show_main(app: AppHandle, connect: Option<bool>) {
+    hide_tray_window(&app);
+    show_main_window(&app);
+    if connect == Some(true) { let _ = app.emit_to("main", "begin-connect", ()); }
+}
+
+/// Launched by "Start at login" (the autostart entry passes this flag), the app
+/// starts in the tray. Launched by a person, it opens its window.
+const AUTOSTART_ARG: &str = "--autostart";
 
 /// The same uninstaller Settings › Apps runs (NSIS writes it beside the exe).
 /// It cleans WSL through the pre-uninstall hook; this app quits so the
@@ -431,7 +508,7 @@ fn quit(app: &AppHandle) {
     app.exit(0);
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn quit_app(app: AppHandle) { quit(&app); }
 
 #[tauri::command]
@@ -475,13 +552,13 @@ fn place_tray(app: &AppHandle, rect: tauri::Rect) {
 pub fn run() {
     tauri::Builder::default()
         .manage(Controller::default())
-        .plugin(tauri_plugin_single_instance::init(|app, _, _| { if let Some(window) = app.get_webview_window("main") { let _ = window.show(); let _ = window.set_focus(); } }))
-        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| show_main_window(app)))
+        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec![AUTOSTART_ARG])))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![status, connect, project_action, open_project, set_tray_state, fit_tray, hide_tray, show_main, quit_app])
+        .invoke_handler(tauri::generate_handler![status, connect, open_connect_page, project_action, open_project, set_tray_state, fit_tray, hide_tray, show_main, quit_app])
         .setup(|app| {
             let handle = app.handle();
             if let Ok(path) = config_path(handle) {
@@ -495,9 +572,13 @@ pub fn run() {
                 if !marker.exists() {
                     let _ = autostart.enable();
                     let _ = fs::write(marker, b"1");
+                } else if autostart.is_enabled().unwrap_or(false) {
+                    // Rewrite an entry 0.0.3 and older registered without the flag,
+                    // or every sign-in would open the window.
+                    let _ = autostart.enable();
                 }
             }
-            let open = MenuItem::with_id(app, "open", "Open window", true, None::<&str>)?;
+            let open = MenuItem::with_id(app, "open", "Open Flowviant Machines", true, None::<&str>)?;
             let login = CheckMenuItem::with_id(app, "login", "Start at login", true, autostart.is_enabled().unwrap_or(false), None::<&str>)?;
             let uninstall_item = MenuItem::with_id(app, "uninstall", "Uninstall Flowviant…", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
@@ -505,7 +586,7 @@ pub fn run() {
             TrayIconBuilder::with_id("main").icon(tauri::image::Image::from_bytes(include_bytes!("../icons/tray-idle.png"))?)
                 .menu(&menu).show_menu_on_left_click(false)
                 .on_menu_event(move |app, event| match event.id().as_ref() {
-                    "open" => { if let Some(window) = app.get_webview_window("main") { let _ = window.show(); let _ = window.set_focus(); } },
+                    "open" => show_main_window(app),
                     "login" => { let auto = app.autolaunch(); if auto.is_enabled().unwrap_or(false) { let _ = auto.disable(); } else { let _ = auto.enable(); } let _ = login.set_checked(auto.is_enabled().unwrap_or(false)); },
                     "quit" => quit(app),
                     "uninstall" => { if launch_uninstaller().is_ok() { quit(app); } },
@@ -533,6 +614,7 @@ pub fn run() {
                     if let tauri::WindowEvent::Focused(false) = event { hide_tray_window(tray_for_focus.app_handle()); }
                 });
             }
+            if !std::env::args().any(|arg| arg == AUTOSTART_ARG) { show_main_window(handle); }
             let startup = handle.clone();
             thread::spawn(move || {
                 let _ = status(startup.clone(), None);
@@ -548,7 +630,22 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{merge_cleanup_distros, parse_wsl_distros, Connection};
+    use super::{connect_url, merge_cleanup_distros, parse_wsl_distros, readable, valid_code, Connection};
+
+    #[test]
+    fn stderr_lines_read_as_words() {
+        assert_eq!(readable("\u{1b}[31merror:\u{1b}[0m no git repository "), "error: no git repository");
+        assert_eq!(readable("W\0S\0L\0 \0e\0r\0r\0o\0r\0"), "WSL error");
+    }
+
+    #[test]
+    fn only_a_printed_code_reaches_the_connect_page() {
+        assert!(valid_code("MJBG-JCX75H"));
+        assert_eq!(connect_url("MJBG-JCX75H"), "https://app.flowviant.com/connect?code=MJBG-JCX75H");
+        assert!(!valid_code(""));
+        assert!(!valid_code("MJBG&next=https://evil"));
+        assert!(!valid_code("ABCDEFGHIJKLMNOPQRSTUVWXYZ"));
+    }
 
     #[test]
     fn cleanup_deduplicates_saved_and_discovered_distros() {
