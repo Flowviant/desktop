@@ -5,12 +5,14 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { type MachineEvent, type RemoteAgent, type Snapshot } from '../model';
 import { Button } from '../ui/Button';
 import { ClaudeMark, CodexMark } from '../ui/marks';
-import { agentLine, elapsed, fixesFor, headerState, projectLine, type Fix } from './trayModel';
+import { agentLine, agentRows, elapsed, fixesFor, headerState, projectLine, stateWord, type Fix } from './trayModel';
 
 const rowButton = 'w-full rounded-[10px] px-[10px] text-left text-[13px] hover:bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent';
 
-function RuntimeMark({ runtime }: { runtime: 'claude' | 'codex' }) {
-  return runtime === 'claude' ? <ClaudeMark className="h-[14px] w-[14px] shrink-0 text-claude" /> : <CodexMark className="h-[14px] w-[14px] shrink-0 text-ink" />;
+function RuntimeMark({ runtime }: { runtime: string }) {
+  if (runtime === 'claude') return <ClaudeMark className="h-[14px] w-[14px] shrink-0 text-claude" />;
+  if (runtime === 'codex') return <CodexMark className="h-[14px] w-[14px] shrink-0 text-ink" />;
+  return <span className="h-[14px] w-[14px] shrink-0" aria-hidden />;
 }
 
 export function TrayPopover({ preview }: { preview?: Snapshot }) {
@@ -122,11 +124,11 @@ export function TrayPopover({ preview }: { preview?: Snapshot }) {
   }
 
   function agentRow(projectId: string, agent: RemoteAgent) {
-    const time = agent.status === 'working' ? elapsed(agent.since, now) : null;
+    const time = agent.status === 'working' && !agent.parked ? elapsed(agent.since, now) : null;
     return <button key={agent.id} className={`${rowButton} flex items-center gap-[10px] py-2 ${agent.asks ? 'bg-amber-wash' : ''}`} onClick={() => void openProject(projectId, 'agent', agent.id)}>
       <RuntimeMark runtime={agent.runtime} />
       <span className="flex min-w-0 flex-1 flex-col"><span className="truncate font-medium">{agent.name}</span><span className={`text-xs ${agent.asks ? 'text-amber-ink' : 'text-quiet'}`}>{agent.asks ? <>asks you a question · <strong className="font-medium">Answer →</strong></> : agentLine(agent)}</span></span>
-      {!agent.asks && <span className={`shrink-0 text-xs ${agent.status === 'working' ? 'text-accent' : 'text-quiet'}`}>{agent.status}{time && ` · ${time}`}</span>}
+      {!agent.asks && <span className={`shrink-0 text-xs ${agent.status === 'working' && !agent.parked ? 'text-accent' : 'text-quiet'}`}>{stateWord(agent)}{time && ` · ${time}`}</span>}
     </button>;
   }
 
@@ -135,7 +137,7 @@ export function TrayPopover({ preview }: { preview?: Snapshot }) {
     <header className="flex flex-col gap-[2px] px-[10px] pb-3 pt-[10px]"><div className="flex items-center gap-2"><span className={`h-2 w-2 rounded-full ${dot === 'ok' ? 'bg-ok' : dot === 'amber' ? 'bg-amber' : 'bg-dim'}`} /><span className="text-sm font-semibold">{boxName}</span></div>{projects.map(project => <div key={project.id} className="text-xs text-quiet">{projectLine(project, snapshot?.version ?? null)}</div>)}</header>
     {snapshot && (projects.length === 0 ? <div className="px-[10px] pb-[10px]"><p className="mt-0 text-xs text-quiet">No project on this computer yet.</p><Button tone="solid" onClick={() => { if (!preview) void invoke('show_main'); }}>Connect a project</Button></div> : <>
       {fixes.map(fixBlock)}
-      {projects.map(project => project.remote?.agents?.length || project.remote?.pressure ? <section key={project.id} className="flex flex-col">{project.remote?.agents?.map(agent => agentRow(project.id, agent))}{project.remote?.pressure && <div className="px-[10px] py-2 text-xs text-quiet">Waiting for the machine — {project.remote.pressure.reason}.</div>}</section> : null)}
+      {projects.map(project => agentRows(project, fixes).length || project.remote?.pressure ? <section key={project.id} className="flex flex-col">{agentRows(project, fixes).map(agent => agentRow(project.id, agent))}{project.remote?.pressure && <div className="px-[10px] py-2 text-xs text-quiet">Waiting for the machine — {project.remote.pressure.reason}.</div>}</section> : null)}
       <div className="mx-[10px] my-[6px] h-px bg-hairline" />
       {confirmQuit ? <div className="px-[10px] py-[6px]"><p className="mt-0 text-xs leading-[1.5] text-quiet">It tears down and exits — anything you type afterwards waits until someone starts it again on that computer.</p><div className="flex gap-2"><Button tone="solid" onClick={() => { if (!preview) void invoke('quit_app'); }}>Quit</Button><Button tone="quiet" onClick={() => setConfirmQuit(false)}>Cancel</Button></div></div> : <nav className="flex flex-col text-[13px]">{menu('machines', 'Open Machines')}{menu('board', 'Open board')}<button className={`${rowButton} py-[6px]`} onClick={() => setConfirmQuit(true)}>Quit Flowviant Machines…</button></nav>}
     </>)}

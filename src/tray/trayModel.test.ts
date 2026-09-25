@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { agentLine, deliveredLine, elapsed, fixesFor, headerState, olderVersion, projectLine } from './trayModel';
+import { agentLine, agentRows, deliveredLine, elapsed, fixesFor, headerState, olderVersion, projectLine } from './trayModel';
 import type { Project, RemoteAgent, Snapshot } from '../model';
+import { stateWord } from './trayModel';
 
 const agent: RemoteAgent = { id: 'a', name: 'Build', status: 'working', runtime: 'codex', delivered: 0, total: 1, asks: false, parked: true, since: null };
 const project: Project = { id: 'p', name: 'Shop', dir: null, distro: 'Ubuntu', running: true, holder: 'serving', lastPoll: null, logFile: '', runtimes: [], daemonVersion: '0.98.0', remote: { at: '', boxName: 'laptop', role: 'serving', servingBoxName: 'laptop', daemonVersion: '0.98.0', latest: '0.99.0', agents: [agent], pressure: null } };
@@ -10,7 +11,13 @@ describe('tray model', () => {
   it('shows measured serving, attention, and inactive header dots', () => {
     const serving = snapshot({ ...project, remote: { ...project.remote!, latest: null } });
     expect(headerState(serving, fixesFor(serving))).toBe('ok');
-    expect(headerState(snapshot(project), fixesFor(snapshot(project)))).toBe('amber');
+    // Behind alone is a note, not a fault; a limit is.
+    expect(headerState(snapshot(project), fixesFor(snapshot(project)))).toBe('ok');
+    const limited = snapshot({ ...project, runtimes: [{ id: 'codex', installed: true, version: null, parkedByLimit: true, message: 'Wait' }] });
+    expect(headerState(limited, fixesFor(limited))).toBe('amber');
+    const other = snapshot({ ...project, remote: { ...project.remote!, role: 'inactive', servingBoxName: 'studio', latest: null } });
+    expect(fixesFor(other).map(fix => fix.kind)).toEqual(['inactive']);
+    expect(headerState(other, fixesFor(other))).toBe('dim');
     const inactive = snapshot({ ...project, running: false, holder: null, remote: null });
     expect(headerState(inactive, [])).toBe('dim');
   });
@@ -19,7 +26,7 @@ describe('tray model', () => {
     expect(fixesFor(snapshot(row)).find(fix => fix.kind === 'limit')).toEqual({ kind: 'limit', projectId: 'p', runtime: 'codex', message: 'Wait until 3 PM', parked: 1 });
     expect(fixesFor(snapshot({ ...row, remote: null })).find(fix => fix.kind === 'limit')).toMatchObject({ parked: null });
     expect(fixesFor(snapshot({ ...row, remote: { ...project.remote!, agents: [] } })).find(fix => fix.kind === 'limit')).toMatchObject({ parked: 0 });
-    expect(fixesFor(snapshot({ ...row, remote: { ...project.remote!, agents: [{ ...agent, parked: 1 }] } })).find(fix => fix.kind === 'limit')).toMatchObject({ parked: 1 });
+    expect(fixesFor(snapshot({ ...row, remote: { ...project.remote!, agents: [{ ...agent, parked: true }] } })).find(fix => fix.kind === 'limit')).toMatchObject({ parked: 1 });
   });
   it('shows behind only for a strictly older numeric version', () => {
     expect(olderVersion('0.98.0', '0.99.0')).toBe(true);
@@ -50,6 +57,16 @@ describe('tray model', () => {
     expect(deliveredLine(agent)).toBe('0 of 1 card');
     expect(deliveredLine({ ...agent, total: 3 })).toBe('0 of 3 cards');
     expect(agentLine({ ...agent, asks: true })).toBe('asks you a question · Answer →');
-    expect(agentLine({ ...agent, asks: 1 })).toBe('asks you a question · Answer →');
+    expect(agentLine({ ...agent, asks: true })).toBe('asks you a question · Answer →');
+  });
+
+  it('folds limit-parked agents into their limit block and labels an uncovered park', () => {
+    const working = { ...agent, id: 'w', parked: false };
+    const row = { ...project, runtimes: [{ id: 'codex', installed: true, version: null, parkedByLimit: true, message: 'Wait' }], remote: { ...project.remote!, agents: [agent, working] } };
+    expect(agentRows(row, fixesFor(snapshot(row))).map(a => a.id)).toEqual(['w']);
+    // No local limit block: the parked agent still lists, and says so.
+    expect(agentRows(project, fixesFor(snapshot(project))).map(a => a.id)).toEqual(['a']);
+    expect(stateWord(agent)).toBe('parked');
+    expect(stateWord(working)).toBe('working');
   });
 });

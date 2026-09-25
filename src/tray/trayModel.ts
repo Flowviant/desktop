@@ -42,8 +42,12 @@ export function fixesFor(snapshot: Snapshot | null, displaced: MachineEvent[] = 
   });
 }
 
+/** Amber is for what is broken here (a limit, a displaced or stopped daemon).
+ *  An update note and "another box is the machine" are facts, not faults. */
+const AMBER: Fix['kind'][] = ['limit', 'displaced', 'not-running'];
+
 export function headerState(snapshot: Snapshot | null, fixes: Fix[]): 'ok' | 'amber' | 'dim' {
-  if (fixes.length) return 'amber';
+  if (fixes.some(fix => AMBER.includes(fix.kind))) return 'amber';
   if (snapshot?.projects.some(project => project.remote?.role === 'serving' || (!project.remote?.role && rowState(project) === 'serving'))) return 'ok';
   return 'dim';
 }
@@ -70,4 +74,16 @@ export function deliveredLine(agent: RemoteAgent): string {
 
 export function agentLine(agent: RemoteAgent): string {
   return agent.asks ? 'asks you a question · Answer →' : deliveredLine(agent);
+}
+
+/** The rows under the fixes. A parked agent whose limit has its own block is
+ *  counted there ("2 agents parked") and not listed again as if it worked. */
+export function agentRows(project: Project, fixes: Fix[]): RemoteAgent[] {
+  const limited = new Set(fixes.filter(fix => fix.kind === 'limit' && fix.projectId === project.id).map(fix => (fix as Extract<Fix, { kind: 'limit' }>).runtime as string));
+  return (project.remote?.agents ?? []).filter(agent => !(agent.parked && limited.has(agent.runtime)));
+}
+
+/** The right slot's state word: a park outranks the stored status it rides on. */
+export function stateWord(agent: RemoteAgent): string {
+  return agent.parked ? 'parked' : agent.status;
 }

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{collections::{HashMap, HashSet}, fs, io::{BufRead, BufReader}, path::PathBuf, process::{Command, Stdio}, sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex}, thread, time::Duration};
-use tauri::{dpi::{LogicalSize, PhysicalPosition}, menu::{CheckMenuItem, Menu, MenuItem}, tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}, AppHandle, Emitter, Manager};
+use std::{collections::{HashMap, HashSet}, fs, io::{BufRead, BufReader}, path::PathBuf, process::{Command, Stdio}, sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex}, thread, time::{Duration, Instant}};
+use tauri::{LogicalSize, PhysicalPosition, menu::{CheckMenuItem, Menu, MenuItem}, tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}, AppHandle, Emitter, Manager};
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
@@ -10,7 +10,7 @@ use tauri_plugin_opener::OpenerExt;
 struct Connection { id: String, distro: String, dir: String }
 
 #[derive(Default)]
-struct Controller { jobs: Mutex<HashMap<String, Arc<AtomicBool>>>, connections: Mutex<Vec<Connection>>, tray_anchor: Mutex<Option<TrayAnchor>> }
+struct Controller { jobs: Mutex<HashMap<String, Arc<AtomicBool>>>, connections: Mutex<Vec<Connection>>, tray_anchor: Mutex<Option<TrayAnchor>>, tray_hidden_at: Mutex<Option<Instant>> }
 
 #[derive(Clone, Copy)]
 struct TrayAnchor { right: f64, bottom: f64, left: f64, top: f64, work_right: f64, work_bottom: f64, scale: f64 }
@@ -318,7 +318,10 @@ fn set_tray_state(app: AppHandle, state: String) {
 }
 
 fn hide_tray_window(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window("tray") { let _ = window.hide(); }
+    if let Some(window) = app.get_webview_window("tray") {
+        if window.is_visible().unwrap_or(false) { if let Ok(mut at) = app.state::<Controller>().tray_hidden_at.lock() { *at = Some(Instant::now()); } }
+        let _ = window.hide();
+    }
     let _ = app.emit("tray-visible", false);
 }
 
@@ -420,8 +423,12 @@ pub fn run() {
                 .on_tray_icon_event(|tray, event| {
                     if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, rect, .. } = event {
                         if let Some(window) = tray.app_handle().get_webview_window("tray") {
+                            // Clicking the icon while the popover is open blurs it first, so it is
+                            // already hidden by the time this click lands: that click means "close".
+                            let just_hidden = tray.app_handle().state::<Controller>().tray_hidden_at.lock().ok()
+                                .and_then(|at| *at).is_some_and(|at| at.elapsed() < Duration::from_millis(300));
                             if window.is_visible().unwrap_or(false) { hide_tray_window(tray.app_handle()); }
-                            else { place_tray(tray.app_handle(), rect); let _ = window.show(); let _ = window.set_focus(); let _ = tray.app_handle().emit("tray-visible", true); }
+                            else if !just_hidden { place_tray(tray.app_handle(), rect); let _ = window.show(); let _ = window.set_focus(); let _ = tray.app_handle().emit("tray-visible", true); }
                         }
                     }
                 }).build(app)?;
