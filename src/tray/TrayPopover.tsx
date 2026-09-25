@@ -104,7 +104,8 @@ export function TrayPopover({ preview, mode = 'tray', previewFlow }: { preview?:
     if (preview) return;
     let active = true;
     const offVisible = listen<boolean>('tray-visible', event => {
-      if (!active) return;
+      // The popover's own show/hide; the window is always rendered.
+      if (!active || windowed) return;
       visibleRef.current = event.payload;
       setVisible(event.payload);
       if (event.payload) { setNow(Date.now()); void refresh(); }

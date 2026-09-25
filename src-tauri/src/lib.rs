@@ -465,7 +465,9 @@ fn hide_tray_window(app: &AppHandle) {
         if window.is_visible().unwrap_or(false) { if let Ok(mut at) = app.state::<Controller>().tray_hidden_at.lock() { *at = Some(Instant::now()); } }
         let _ = window.hide();
     }
-    let _ = app.emit("tray-visible", false);
+    // To the popover only: the main window renders the same component, and a
+    // broadcast "hidden" blanked it until the popover next opened.
+    let _ = app.emit_to("tray", "tray-visible", false);
 }
 
 #[tauri::command]
@@ -600,7 +602,7 @@ pub fn run() {
                             let just_hidden = tray.app_handle().state::<Controller>().tray_hidden_at.lock().ok()
                                 .and_then(|at| *at).is_some_and(|at| at.elapsed() < Duration::from_millis(300));
                             if window.is_visible().unwrap_or(false) { hide_tray_window(tray.app_handle()); }
-                            else if !just_hidden { place_tray(tray.app_handle(), rect); let _ = window.show(); let _ = window.set_focus(); let _ = tray.app_handle().emit("tray-visible", true); }
+                            else if !just_hidden { place_tray(tray.app_handle(), rect); let _ = window.show(); let _ = window.set_focus(); let _ = tray.app_handle().emit_to("tray", "tray-visible", true); }
                         }
                     }
                 }).build(app)?;
