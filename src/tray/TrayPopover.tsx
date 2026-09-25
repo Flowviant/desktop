@@ -137,7 +137,7 @@ export function TrayPopover({ preview, mode = 'tray', previewFlow }: { preview?:
 
   useEffect(() => {
     if (!visible || preview || windowed || !content.current) return;
-    const observer = new ResizeObserver(() => { if (content.current) void invoke('fit_tray', { height: content.current.getBoundingClientRect().height + 24 }); });
+    const observer = new ResizeObserver(() => { if (content.current) void invoke('fit_tray', { height: Math.ceil(content.current.getBoundingClientRect().height) + 26 }); });
     observer.observe(content.current);
     return () => observer.disconnect();
   }, [visible, preview]);
@@ -220,5 +220,7 @@ export function TrayPopover({ preview, mode = 'tray', previewFlow }: { preview?:
     {notice && <div role="alert" className="px-[10px] py-2 text-xs text-amber-ink">{notice}</div>}
   </div>;
   if (windowed) return <div ref={card} className="min-h-screen bg-white p-[6px] text-ink">{body}</div>;
-  return <div className="w-[352px] p-[6px]"><div ref={card} className="max-h-[calc(100vh-12px)] w-[340px] overflow-y-auto rounded-[14px] bg-white p-[6px] text-ink shadow-[0_12px_40px_hsl(222_30%_20%_/_0.22),0_2px_6px_hsl(222_30%_20%_/_0.08)]">{body}</div></div>;
+  // The rounded card CLIPS and an inner box scrolls: a scrollbar drawn on the
+  // rounded element itself squared off the card's right corners.
+  return <div className="w-[352px] p-[6px]"><div ref={card} className="w-[340px] overflow-hidden rounded-[14px] bg-white text-ink shadow-[0_12px_40px_hsl(222_30%_20%_/_0.22),0_2px_6px_hsl(222_30%_20%_/_0.08)]"><div className="fv-scroll max-h-[calc(100vh-12px)] overflow-y-auto p-[6px]">{body}</div></div></div>;
 }

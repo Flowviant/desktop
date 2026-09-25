@@ -7,3 +7,10 @@ body { margin: 0; color: hsl(222 22% 13%); background: #fff; font-family: Switze
 body.tray-window { background: transparent; }
 body.tray-preview { min-height: 100vh; background: linear-gradient(160deg, hsl(215 30% 78%), hsl(226 24% 70%)); }
 body.tray-preview #root { display: flex; align-items: flex-end; justify-content: flex-end; min-height: 100vh; padding: 10px; box-sizing: border-box; }
+
+/* A thin, quiet scrollbar that shows only when there is something to scroll:
+   a 6px rounded thumb, no track. Both windows. */
+html, .fv-scroll { scrollbar-width: thin; scrollbar-color: hsl(220 10% 80%) transparent; }
+.fv-scroll::-webkit-scrollbar, html::-webkit-scrollbar { width: 6px; }
+.fv-scroll::-webkit-scrollbar-track, html::-webkit-scrollbar-track { background: transparent; }
+.fv-scroll::-webkit-scrollbar-thumb, html::-webkit-scrollbar-thumb { background: hsl(220 10% 80%); border-radius: 999px; }
