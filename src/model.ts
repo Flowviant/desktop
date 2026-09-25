@@ -1,5 +1,8 @@
 export type Runtime = { id: string; installed: boolean; version: string | null; parkedByLimit?: boolean; message?: string };
-export type Project = { id: string; name: string | null; dir: string | null; distro: string; daemonVersion?: string | null; running: boolean | null; holder: string | null; lastPoll: string | null; logFile: string; runtimes: Runtime[] };
+// The current daemon relays asks/parked as counts; boolean is the intended wire shape.
+export type RemoteAgent = { id: string; name: string; status: string; runtime: 'claude' | 'codex'; delivered: number; total: number; asks: boolean | number; parked: boolean | number; since: string | null };
+export type RemoteProject = { at: string; boxName: string | null; role: 'serving' | 'inactive' | null; servingBoxName: string | null; daemonVersion: string | null; latest: string | null; agents: RemoteAgent[] | null; pressure: { reason: string; at: string } | null };
+export type Project = { id: string; name: string | null; dir: string | null; distro: string; daemonVersion?: string | null; remote?: RemoteProject | null; running: boolean | null; holder: string | null; lastPoll: string | null; logFile: string; runtimes: Runtime[] };
 export type Snapshot = { schema: number; version: string | null; projects: Project[]; runtimes: Runtime[]; cli: { distro: string; runtimes: Runtime[] }[] };
 export type MachineEvent = { event: string; projectId?: string; message?: string; runtime?: string; from?: string; to?: string; code?: string };
 export type TrayState = 'serving' | 'idle' | 'attention';

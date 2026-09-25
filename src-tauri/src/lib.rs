@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{collections::{HashMap, HashSet}, fs, io::{BufRead, BufReader}, path::PathBuf, process::{Command, Stdio}, sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex}, thread, time::Duration};
-use tauri::{menu::{CheckMenuItem, Menu, MenuItem}, tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}, AppHandle, Emitter, Manager};
+use tauri::{dpi::{LogicalSize, PhysicalPosition}, menu::{CheckMenuItem, Menu, MenuItem}, tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}, AppHandle, Emitter, Manager};
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
@@ -10,7 +10,10 @@ use tauri_plugin_opener::OpenerExt;
 struct Connection { id: String, distro: String, dir: String }
 
 #[derive(Default)]
-struct Controller { jobs: Mutex<HashMap<String, Arc<AtomicBool>>>, connections: Mutex<Vec<Connection>> }
+struct Controller { jobs: Mutex<HashMap<String, Arc<AtomicBool>>>, connections: Mutex<Vec<Connection>>, tray_anchor: Mutex<Option<TrayAnchor>> }
+
+#[derive(Clone, Copy)]
+struct TrayAnchor { right: f64, bottom: f64, left: f64, top: f64, work_right: f64, work_bottom: f64, scale: f64 }
 
 fn config_path(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
@@ -171,7 +174,7 @@ fn connection(app: &AppHandle, id: &str) -> Result<Connection, String> {
 }
 
 #[tauri::command]
-fn status(app: AppHandle) -> Result<Value, String> {
+fn status(app: AppHandle, remote: Option<bool>) -> Result<Value, String> {
     let known = app.state::<Controller>().connections.lock().map_err(|e| e.to_string())?.clone();
     let mut distros: HashSet<_> = known.iter().map(|c| c.distro.clone()).collect();
     distros.extend(wsl_distros());
@@ -180,8 +183,13 @@ fn status(app: AppHandle) -> Result<Value, String> {
     let mut cli = Vec::new();
     let mut version = Value::Null;
     for distro in distros {
-        let raw = binary_path(&distro).ok().and_then(|binary| run_wsl(&distro, None, &[&binary, "status", "--json"]).ok())
-            .or_else(|| run_wsl(&distro, None, &["flowviant", "status", "--json"]).ok());
+        let remote_raw = if remote == Some(true) {
+            binary_path(&distro).ok().and_then(|binary| run_wsl(&distro, None, &[&binary, "status", "--json", "--remote"]).ok())
+                .or_else(|| run_wsl(&distro, None, &["flowviant", "status", "--json", "--remote"]).ok())
+                .filter(|raw| serde_json::from_str::<Value>(raw).is_ok())
+        } else { None };
+        let raw = remote_raw.or_else(|| binary_path(&distro).ok().and_then(|binary| run_wsl(&distro, None, &[&binary, "status", "--json"]).ok())
+            .or_else(|| run_wsl(&distro, None, &["flowviant", "status", "--json"]).ok()));
         if let Some(raw) = raw {
             if let Ok(mut value) = serde_json::from_str::<Value>(&raw) {
                 let distro_version = value["version"].clone();
@@ -275,13 +283,22 @@ fn project_action(app: AppHandle, id: String, action: String) -> Result<(), Stri
     Ok(())
 }
 
+fn valid_route_id(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 64 && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+}
+
 #[tauri::command]
-fn open_project(app: AppHandle, id: String, page: String) -> Result<(), String> {
+fn open_project(app: AppHandle, id: String, page: String, agent: Option<String>) -> Result<(), String> {
+    if !valid_route_id(&id) || agent.as_deref().is_some_and(|value| !valid_route_id(value)) { return Err("Invalid project or agent ID".into()); }
     let row = connection(&app, &id)?;
     match page.as_str() {
         "board" | "machines" => {
-            let suffix = if page == "board" { "board" } else { "settings/machines" };
+            let suffix = if page == "board" { "board" } else { "machines" };
             app.opener().open_url(format!("https://app.flowviant.com/projects/{id}/{suffix}"), None::<&str>).map_err(|e| e.to_string())
+        }
+        "agent" => {
+            let agent = agent.ok_or("Agent ID is required")?;
+            app.opener().open_url(format!("https://app.flowviant.com/projects/{id}/v2/agents/{agent}"), None::<&str>).map_err(|e| e.to_string())
         }
         "logs" => {
             let binary = binary_path(&row.distro)?;
@@ -300,6 +317,69 @@ fn set_tray_state(app: AppHandle, state: String) {
     if matches!(state.as_str(), "serving" | "idle" | "attention") { tray_icon(&app, &state); }
 }
 
+fn hide_tray_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("tray") { let _ = window.hide(); }
+    let _ = app.emit("tray-visible", false);
+}
+
+#[tauri::command]
+fn hide_tray(app: AppHandle) { hide_tray_window(&app); }
+
+#[tauri::command]
+fn show_main(app: AppHandle) {
+    hide_tray_window(&app);
+    if let Some(window) = app.get_webview_window("main") { let _ = window.show(); let _ = window.set_focus(); }
+}
+
+fn quit(app: &AppHandle) {
+    let rows = app.state::<Controller>().connections.lock().unwrap().clone();
+    for row in rows {
+        if let Ok(binary) = binary_path(&row.distro) { let _ = run_wsl(&row.distro, None, &[&binary, "stop", "--project", &row.id]); }
+    }
+    app.exit(0);
+}
+
+#[tauri::command]
+fn quit_app(app: AppHandle) { quit(&app); }
+
+#[tauri::command]
+fn fit_tray(app: AppHandle, height: f64) -> Result<(), String> {
+    if !height.is_finite() || height <= 0.0 { return Err("Invalid tray height".into()); }
+    let anchor = app.state::<Controller>().tray_anchor.lock().map_err(|e| e.to_string())?.ok_or("Tray is not placed")?;
+    let window = app.get_webview_window("tray").ok_or("Tray window is missing")?;
+    let work_height = anchor.work_bottom - anchor.top;
+    let logical_height = height.min(work_height / anchor.scale * 0.8);
+    window.set_size(LogicalSize::new(352.0, logical_height)).map_err(|e| e.to_string())?;
+    let x = (anchor.right - 352.0 * anchor.scale).clamp(anchor.left, (anchor.work_right - 352.0 * anchor.scale).max(anchor.left));
+    let y = (anchor.bottom - logical_height * anchor.scale).clamp(anchor.top, (anchor.work_bottom - logical_height * anchor.scale).max(anchor.top));
+    window.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32)).map_err(|e| e.to_string())
+}
+
+fn place_tray(app: &AppHandle, rect: tauri::Rect) {
+    let Some(window) = app.get_webview_window("tray") else { return };
+    let position = rect.position.to_physical::<f64>(1.0);
+    let size = rect.size.to_physical::<f64>(1.0);
+    let center_x = position.x + size.width / 2.0;
+    let center_y = position.y + size.height / 2.0;
+    let Ok(Some(monitor)) = window.monitor_from_point(center_x, center_y) else { return };
+    let work = monitor.work_area();
+    let left = f64::from(work.position.x);
+    let top = f64::from(work.position.y);
+    let work_right = left + f64::from(work.size.width);
+    let work_bottom = top + f64::from(work.size.height);
+    let scale = monitor.scale_factor();
+    let icon_right = position.x + size.width;
+    let icon_bottom = position.y + size.height;
+    let right = if icon_right <= left { icon_right + 352.0 * scale } else if position.x >= work_right { position.x } else { icon_right };
+    let height = window.inner_size().map(|size| f64::from(size.height)).unwrap_or(480.0 * scale);
+    let bottom = if icon_bottom <= top { top + height } else { position.y };
+    let x = (right - 352.0 * scale).clamp(left, (work_right - 352.0 * scale).max(left));
+    let y = (bottom - height).clamp(top, (work_bottom - height).max(top));
+    let anchor = TrayAnchor { right: x + 352.0 * scale, bottom: y + height, left, top, work_right, work_bottom, scale };
+    if let Ok(mut saved) = app.state::<Controller>().tray_anchor.lock() { *saved = Some(anchor); }
+    let _ = window.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
+}
+
 pub fn run() {
     tauri::Builder::default()
         .manage(Controller::default())
@@ -309,7 +389,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![status, connect, project_action, open_project, set_tray_state])
+        .invoke_handler(tauri::generate_handler![status, connect, project_action, open_project, set_tray_state, fit_tray, hide_tray, show_main, quit_app])
         .setup(|app| {
             let handle = app.handle();
             if let Ok(path) = config_path(handle) {
@@ -325,22 +405,23 @@ pub fn run() {
                     let _ = fs::write(marker, b"1");
                 }
             }
-            let open = MenuItem::with_id(app, "open", "Open", true, None::<&str>)?;
+            let open = MenuItem::with_id(app, "open", "Open window", true, None::<&str>)?;
             let login = CheckMenuItem::with_id(app, "login", "Start at login", true, autostart.is_enabled().unwrap_or(false), None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &login, &quit])?;
+            let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&open, &login, &quit_item])?;
             TrayIconBuilder::with_id("main").icon(tauri::image::Image::from_bytes(include_bytes!("../icons/tray-idle.png"))?)
                 .menu(&menu).show_menu_on_left_click(false)
                 .on_menu_event(move |app, event| match event.id().as_ref() {
                     "open" => { if let Some(window) = app.get_webview_window("main") { let _ = window.show(); let _ = window.set_focus(); } },
                     "login" => { let auto = app.autolaunch(); if auto.is_enabled().unwrap_or(false) { let _ = auto.disable(); } else { let _ = auto.enable(); } let _ = login.set_checked(auto.is_enabled().unwrap_or(false)); },
-                    "quit" => { let rows = app.state::<Controller>().connections.lock().unwrap().clone(); for row in rows { if let Ok(binary) = binary_path(&row.distro) { let _ = run_wsl(&row.distro, None, &[&binary, "stop", "--project", &row.id]); } } app.exit(0); },
+                    "quit" => quit(app),
                     _ => (),
                 })
                 .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
-                        if let Some(window) = tray.app_handle().get_webview_window("main") {
-                            if window.is_visible().unwrap_or(false) { let _ = window.hide(); } else { let _ = window.show(); let _ = window.set_focus(); }
+                    if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, rect, .. } = event {
+                        if let Some(window) = tray.app_handle().get_webview_window("tray") {
+                            if window.is_visible().unwrap_or(false) { hide_tray_window(tray.app_handle()); }
+                            else { place_tray(tray.app_handle(), rect); let _ = window.show(); let _ = window.set_focus(); let _ = tray.app_handle().emit("tray-visible", true); }
                         }
                     }
                 }).build(app)?;
@@ -348,9 +429,15 @@ pub fn run() {
                 let window_for_close = window.clone();
                 window.on_window_event(move |event| { if let tauri::WindowEvent::CloseRequested { api, .. } = event { api.prevent_close(); let _ = window_for_close.hide(); } });
             }
+            if let Some(window) = app.get_webview_window("tray") {
+                let tray_for_focus = window.clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::Focused(false) = event { hide_tray_window(tray_for_focus.app_handle()); }
+                });
+            }
             let startup = handle.clone();
             thread::spawn(move || {
-                let _ = status(startup.clone());
+                let _ = status(startup.clone(), None);
                 let rows = startup.state::<Controller>().connections.lock().unwrap().clone();
                 for row in rows { let _ = start_one(&startup, row); }
                 let _ = startup.emit("status-changed", ());

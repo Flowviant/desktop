@@ -3,4 +3,7 @@
 @tailwind utilities;
 @font-face { font-family: Switzer; src: url('/fonts/switzer-variable.woff2') format('woff2'); font-style: normal; font-weight: 100 900; font-display: swap; }
 html, body, #root { min-height: 100%; }
-body { margin: 0; color: #1a1e28; background: #fcfcfd; font-family: Switzer, 'Segoe UI', sans-serif; }
+body { margin: 0; color: hsl(222 22% 13%); background: #fff; font-family: Switzer, 'Segoe UI', sans-serif; }
+body.tray-window { background: transparent; }
+body.tray-preview { min-height: 100vh; background: linear-gradient(160deg, hsl(215 30% 78%), hsl(226 24% 70%)); }
+body.tray-preview #root { display: flex; align-items: flex-end; justify-content: flex-end; min-height: 100vh; padding: 10px; box-sizing: border-box; }

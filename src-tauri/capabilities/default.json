@@ -1,1 +1,1 @@
-{"identifier":"default","description":"Desktop window","windows":["main"],"permissions":["core:default","dialog:allow-open"]}
+{"identifier":"default","description":"Desktop windows","windows":["main","tray"],"permissions":["core:default","dialog:allow-open"]}

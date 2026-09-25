@@ -19,6 +19,20 @@
         "minWidth": 360,
         "minHeight": 420,
         "visible": false
+      },
+      {
+        "label": "tray",
+        "url": "index.html",
+        "width": 352,
+        "height": 480,
+        "decorations": false,
+        "transparent": true,
+        "resizable": false,
+        "skipTaskbar": true,
+        "alwaysOnTop": true,
+        "visible": false,
+        "shadow": false,
+        "focus": true
       }
     ],
     "security": {
