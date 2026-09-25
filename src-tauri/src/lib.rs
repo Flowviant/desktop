@@ -413,6 +413,16 @@ fn show_main(app: AppHandle) {
     if let Some(window) = app.get_webview_window("main") { let _ = window.show(); let _ = window.set_focus(); }
 }
 
+/// The same uninstaller Settings › Apps runs (NSIS writes it beside the exe).
+/// It cleans WSL through the pre-uninstall hook; this app quits so the
+/// uninstaller finds nothing running.
+fn launch_uninstaller() -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let uninstaller = exe.parent().ok_or("no install folder")?.join("uninstall.exe");
+    if !uninstaller.is_file() { return Err("uninstaller not found".into()); }
+    Command::new(uninstaller).spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
 fn quit(app: &AppHandle) {
     let rows = app.state::<Controller>().connections.lock().unwrap().clone();
     for row in rows {
@@ -489,14 +499,16 @@ pub fn run() {
             }
             let open = MenuItem::with_id(app, "open", "Open window", true, None::<&str>)?;
             let login = CheckMenuItem::with_id(app, "login", "Start at login", true, autostart.is_enabled().unwrap_or(false), None::<&str>)?;
+            let uninstall_item = MenuItem::with_id(app, "uninstall", "Uninstall Flowviant…", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &login, &quit_item])?;
+            let menu = Menu::with_items(app, &[&open, &login, &uninstall_item, &quit_item])?;
             TrayIconBuilder::with_id("main").icon(tauri::image::Image::from_bytes(include_bytes!("../icons/tray-idle.png"))?)
                 .menu(&menu).show_menu_on_left_click(false)
                 .on_menu_event(move |app, event| match event.id().as_ref() {
                     "open" => { if let Some(window) = app.get_webview_window("main") { let _ = window.show(); let _ = window.set_focus(); } },
                     "login" => { let auto = app.autolaunch(); if auto.is_enabled().unwrap_or(false) { let _ = auto.disable(); } else { let _ = auto.enable(); } let _ = login.set_checked(auto.is_enabled().unwrap_or(false)); },
                     "quit" => quit(app),
+                    "uninstall" => { if launch_uninstaller().is_ok() { quit(app); } },
                     _ => (),
                 })
                 .on_tray_icon_event(|tray, event| {
