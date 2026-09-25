@@ -91,8 +91,15 @@ fn merge_cleanup_distros(saved: &[Connection], discovered: Vec<String>) -> Vec<S
 }
 
 // The uninstaller must finish even when WSL is stuck starting or a distro hangs.
-fn cleanup_output(mut command: Command, deadline: Instant, capture: bool) -> Result<Vec<u8>, String> {
-    let call_deadline = deadline.min(Instant::now() + Duration::from_secs(10));
+fn cleanup_output(command: Command, deadline: Instant, capture: bool) -> Result<Vec<u8>, String> {
+    cleanup_output_within(command, deadline, capture, Duration::from_secs(10))
+}
+
+// Probes get 10 s; the uninstall itself (stopping daemons, `npm uninstall -g`)
+// gets the rest of the budget, because killing wsl.exe does not stop the Linux
+// side and would leave the work half done.
+fn cleanup_output_within(mut command: Command, deadline: Instant, capture: bool, cap: Duration) -> Result<Vec<u8>, String> {
+    let call_deadline = deadline.min(Instant::now() + cap);
     if Instant::now() >= call_deadline { return Err("WSL timed out".into()); }
     command.stdout(if capture { Stdio::piped() } else { Stdio::null() }).stderr(Stdio::null());
     let mut child = command.spawn().map_err(|e| e.to_string())?;
@@ -137,9 +144,15 @@ pub fn uninstall_cleanup() {
         .collect();
     for distro in merge_cleanup_distros(&saved, discovered) {
         if Instant::now() >= deadline { break; }
-        let removed = cleanup_binary_path(&distro, deadline).ok()
-            .is_some_and(|binary| cleanup_wsl(&distro, &[&binary, "uninstall", "--yes", "--json"], deadline, false).is_ok());
-        if !removed { let _ = cleanup_wsl(&distro, &["flowviant", "uninstall", "--yes", "--json"], deadline, false); }
+        let binary = cleanup_binary_path(&distro, deadline).ok();
+        let present = binary.as_deref().is_some_and(|path| cleanup_wsl(&distro, &["test", "-f", path], deadline, false).is_ok());
+        if let (true, Some(binary)) = (present, binary) {
+            let _ = cleanup_output_within(wsl(&distro, None, &[&binary, "uninstall", "--yes", "--json"]), deadline, false, Duration::from_secs(60));
+        } else {
+            // Never `uninstall` through an unknown copy: a version without the
+            // command can read it as "start the daemon". Every version knows `stop`.
+            let _ = cleanup_wsl(&distro, &["sh", "-c", "command -v flowviant >/dev/null 2>&1 && flowviant stop"], deadline, false);
+        }
     }
 }
 
