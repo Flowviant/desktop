@@ -65,17 +65,82 @@ fn version(v: &str) -> Vec<u64> {
 }
 
 fn binary_path(distro: &str) -> Result<String, String> {
-    Ok(format!("{}/.flowviant/bin/flowviant", run_wsl(distro, None, &["sh", "-c", "printf %s \"$HOME\""])?))
+    Ok(binary_path_for_home(&run_wsl(distro, None, &["sh", "-c", "printf %s \"$HOME\""])?))
+}
+
+fn binary_path_for_home(home: &str) -> String { format!("{home}/.flowviant/bin/flowviant") }
+
+fn parse_wsl_distros(output: &[u8]) -> Vec<String> {
+    let decoded = if output.starts_with(&[0xff, 0xfe]) || (output.len() >= 2 && output[1] == 0) {
+        String::from_utf16_lossy(&output.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect::<Vec<_>>())
+    } else { String::from_utf8_lossy(output).to_string() };
+    decoded.lines().map(|line| line.trim_matches(['\u{feff}', '\0', '\r', ' ']).to_string())
+        .filter(|name| !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))).collect()
 }
 
 fn wsl_distros() -> Vec<String> {
     let Ok(output) = Command::new("wsl.exe").args(["--list", "--quiet"]).output() else { return Vec::new() };
     if !output.status.success() { return Vec::new(); }
-    let decoded = if output.stdout.len() >= 2 && output.stdout[1] == 0 {
-        String::from_utf16_lossy(&output.stdout.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect::<Vec<_>>())
-    } else { String::from_utf8_lossy(&output.stdout).to_string() };
-    decoded.lines().map(|line| line.trim_matches(['\u{feff}', '\0', '\r', ' ']).to_string())
-        .filter(|name| !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))).collect()
+    parse_wsl_distros(&output.stdout)
+}
+
+fn merge_cleanup_distros(saved: &[Connection], discovered: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    saved.iter().map(|row| row.distro.clone()).chain(discovered)
+        .filter(|distro| seen.insert(distro.clone())).collect()
+}
+
+// The uninstaller must finish even when WSL is stuck starting or a distro hangs.
+fn cleanup_output(mut command: Command, deadline: Instant, capture: bool) -> Result<Vec<u8>, String> {
+    let call_deadline = deadline.min(Instant::now() + Duration::from_secs(10));
+    if Instant::now() >= call_deadline { return Err("WSL timed out".into()); }
+    command.stdout(if capture { Stdio::piped() } else { Stdio::null() }).stderr(Stdio::null());
+    let mut child = command.spawn().map_err(|e| e.to_string())?;
+    loop {
+        let status = match child.try_wait() {
+            Ok(status) => status,
+            Err(error) => { let _ = child.kill(); let _ = child.wait(); return Err(error.to_string()); }
+        };
+        if let Some(status) = status {
+            let output = child.wait_with_output().map_err(|e| e.to_string())?;
+            return if status.success() { Ok(output.stdout) } else { Err("WSL command failed".into()) };
+        }
+        if Instant::now() >= call_deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("WSL timed out".into());
+        }
+        thread::sleep(Duration::from_millis(25).min(call_deadline.saturating_duration_since(Instant::now())));
+    }
+}
+
+fn cleanup_wsl(distro: &str, args: &[&str], deadline: Instant, capture: bool) -> Result<Vec<u8>, String> {
+    cleanup_output(wsl(distro, None, args), deadline, capture)
+}
+
+fn cleanup_binary_path(distro: &str, deadline: Instant) -> Result<String, String> {
+    let home = cleanup_wsl(distro, &["sh", "-c", "printf %s \"$HOME\""], deadline, true)?;
+    Ok(binary_path_for_home(String::from_utf8_lossy(&home).trim()))
+}
+
+pub fn uninstall_cleanup() {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    // Tauri's Windows app_config_dir is %APPDATA%/<identifier>.
+    let saved = std::env::var_os("APPDATA")
+        .and_then(|base| fs::read(PathBuf::from(base).join("com.flowviant.desktop").join("connections.json")).ok())
+        .and_then(|data| serde_json::from_slice::<Vec<Connection>>(&data).ok())
+        .unwrap_or_default();
+    let mut list = Command::new("wsl.exe");
+    list.args(["--list", "--quiet"]);
+    let discovered = cleanup_output(list, deadline, true).map(|output| parse_wsl_distros(&output)).unwrap_or_default()
+        .into_iter().filter(|distro| cleanup_wsl(distro, &["sh", "-c", "test -f \"$HOME/.flowviant/bin/flowviant\""], deadline, false).is_ok())
+        .collect();
+    for distro in merge_cleanup_distros(&saved, discovered) {
+        if Instant::now() >= deadline { break; }
+        let removed = cleanup_binary_path(&distro, deadline).ok()
+            .is_some_and(|binary| cleanup_wsl(&distro, &[&binary, "uninstall", "--yes", "--json"], deadline, false).is_ok());
+        if !removed { let _ = cleanup_wsl(&distro, &["flowviant", "uninstall", "--yes", "--json"], deadline, false); }
+    }
 }
 
 fn ensure_binary(app: &AppHandle, distro: &str) -> Result<(), String> {
@@ -93,6 +158,7 @@ fn ensure_binary(app: &AppHandle, distro: &str) -> Result<(), String> {
     fs::copy(source, unc).map_err(|e| e.to_string())?;
     run_wsl(distro, None, &["mv", &format!("{home}/.flowviant/bin/flowviant.new"), &format!("{home}/.flowviant/bin/flowviant")])?;
     run_wsl(distro, None, &["chmod", "700", &format!("{home}/.flowviant/bin/flowviant")])?;
+    let _ = run_wsl(distro, None, &[&target, "uninstall", "--others", "--yes", "--json"]);
     Ok(())
 }
 
@@ -453,4 +519,26 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("Flowviant desktop failed");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{merge_cleanup_distros, parse_wsl_distros, Connection};
+
+    #[test]
+    fn cleanup_deduplicates_saved_and_discovered_distros() {
+        let saved = vec![
+            Connection { id: "first".into(), distro: "Ubuntu".into(), dir: "/one".into() },
+            Connection { id: "second".into(), distro: "Ubuntu".into(), dir: "/two".into() },
+            Connection { id: "third".into(), distro: "Debian".into(), dir: "/three".into() },
+        ];
+        assert_eq!(merge_cleanup_distros(&saved, vec!["Debian".into(), "Fedora".into(), "Fedora".into()]),
+            vec!["Ubuntu", "Debian", "Fedora"]);
+    }
+
+    #[test]
+    fn wsl_distro_list_decodes_utf16_and_ignores_invalid_names() {
+        let output: Vec<u8> = "\u{feff}Ubuntu\r\nBad Name\r\nDebian\r\n".encode_utf16().flat_map(u16::to_le_bytes).collect();
+        assert_eq!(parse_wsl_distros(&output), vec!["Ubuntu", "Debian"]);
+    }
 }

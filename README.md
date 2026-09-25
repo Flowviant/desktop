@@ -2,6 +2,10 @@
 
 Windows first: a Tauri 2 tray that bundles the Linux x64 daemon for projects in WSL. Pick `\\wsl$\<distro>\…` or `\\wsl.localhost\<distro>\…`. A Windows folder is declined until a native Windows daemon exists. The tray starts at login by default. Closing the window hides it; Quit stops the daemons this app started on this box.
 
+## Uninstall
+
+Windows Settings › Apps removes the tray app, stops its WSL daemons, and removes the binaries while keeping the login in `~/.flowviant` for a later install. Inside WSL, run `flowviant uninstall` (`--purge` removes everything). Newer installs remove older copies automatically.
+
 ## Build the bundled daemon
 
 In the CLI checkout, build the release binary with the same version used by the server:
