@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseWslPath, reduceEvent, rowState, trayState, type Project } from './model';
 import { readFileSync } from 'node:fs';
+import { stripComments } from '../../web/src/test/stripComments';
 
 const row = (running: boolean | null, holder: string | null): Project => ({ id: 'p', name: 'Project', dir: '/home/me/repo', distro: 'Ubuntu', running, holder, lastPoll: null, logFile: '', runtimes: [] });
 
@@ -28,18 +29,13 @@ describe('desktop contract', () => {
   // Which events notify is Rust's alone (`src-tauri/src/notifications.rs`, its
   // own `#[cfg(test)]` cases): the TypeScript `shouldNotify` mirror had no
   // caller, so its test could not see the native behaviour drift. Pinned as
-  // an absence, since one coming back passes every other test here.
+  // an absence, since one coming back passes every other test here. The Rust
+  // half (`announce` asks that policy; lib.rs holds no copy) moved into
+  // notifications.rs's `the_announcer_asks_this_policy`, where it matches Rust
+  // code with comments stripped; this half matches model.ts's code the same way.
   it('keeps the notification policy in one place, the one that notifies', () => {
-    const model = readFileSync(new URL('./model.ts', import.meta.url), 'utf8');
+    const model = stripComments(readFileSync(new URL('./model.ts', import.meta.url), 'utf8'), 'model.ts');
+    expect(model).toContain('export function reduceEvent(');
     expect(model).not.toMatch(/shouldNotify/);
-    // `announce` moved with the supervisor out of lib.rs (SOLID F161).
-    const announcer = readFileSync(new URL('../src-tauri/src/supervisor.rs', import.meta.url), 'utf8');
-    expect(announcer).toContain('fn announce(');
-    expect(announcer).toContain('notifications::notification_for_event(');
-    expect(announcer).not.toMatch(/matches!\(kind,\s*"displaced"/);
-    const lib = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8');
-    expect(lib).not.toMatch(/fn announce\(|matches!\(kind,\s*"displaced"/);
-    const policy = readFileSync(new URL('../src-tauri/src/notifications.rs', import.meta.url), 'utf8');
-    expect(policy).toContain('pub fn notification_for_event(');
   });
 });

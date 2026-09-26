@@ -38,6 +38,8 @@ pub fn can_auto_install(reads: &[Option<Vec<ServedProject>>]) -> bool {
 mod tests {
     use super::{can_auto_install, ServedProject};
 
+    include!("source_pins.rs");
+
     const IDLE: ServedProject = ServedProject { running: true, busy: Some(false) };
     const WORKING: ServedProject = ServedProject { running: true, busy: Some(true) };
     const UNKNOWN: ServedProject = ServedProject { running: true, busy: None };
@@ -75,10 +77,11 @@ mod tests {
     /// The source half: the loop asks this rule over the LOCAL status, and the
     /// card's "Restart now" stays an ungated, explicit install. The wiring
     /// moved out of `lib.rs` into `self_update.rs` (SOLID F161); the pin moved
-    /// with it, and `lib.rs` is held to not growing a second copy.
+    /// with it, and `lib.rs` is held to not growing a second copy. Both
+    /// files are matched as code, comments stripped.
     #[test]
     fn the_loop_asks_this_rule_and_restart_now_is_not_gated() {
-        let wiring = include_str!("self_update.rs");
+        let wiring = code(include_str!("self_update.rs"));
         let idle = wiring.find("fn machine_idle(").expect("machine_idle");
         let end = wiring[idle..].find("\n}\n").expect("machine_idle end") + idle;
         let body = &wiring[idle..end];
@@ -87,7 +90,7 @@ mod tests {
         assert!(!body.contains("--remote"), "the server's agent list is not the measurement");
         assert!(wiring.contains("if staged() && machine_idle(&app) { let _ = install_pending(&app); }"));
         assert!(wiring.contains("fn install_update(app: AppHandle) -> Result<(), String> { install_pending(&app) }"));
-        let lib = include_str!("lib.rs");
+        let lib = code(include_str!("lib.rs"));
         for moved in ["fn machine_idle(", "fn install_pending(", "fn update_loop(", "can_auto_install"] {
             assert!(!lib.contains(moved), "lib.rs grew {moved} back");
         }

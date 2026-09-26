@@ -42,6 +42,8 @@ pub fn notification_for_event(kind: &str, message: Option<&str>) -> Option<Notic
 mod tests {
     use super::{notification_for_event, Notice};
 
+    include!("source_pins.rs");
+
     #[test]
     fn every_machine_event_notifies_in_its_own_words_or_ours() {
         let cases = [
@@ -58,6 +60,26 @@ mod tests {
                 "{kind}"
             );
         }
+    }
+
+    /// The source half, moved here from `src/model.test.ts` so it matches
+    /// code with comments stripped: `announce` (supervisor.rs) asks this
+    /// policy and keeps no allowlist of its own, and `lib.rs` has neither.
+    /// The TypeScript half (no `shouldNotify` in model.ts) stays there.
+    #[test]
+    fn the_announcer_asks_this_policy() {
+        let policy = code(include_str!("notifications.rs"));
+        assert!(policy.contains("pub fn notification_for_event("));
+        let announcer = code(include_str!("supervisor.rs"));
+        assert!(announcer.contains("fn announce("));
+        assert!(announcer.contains("notifications::notification_for_event("));
+        let lib = code(include_str!("lib.rs"));
+        let second_allowlist = |source: &str| source.match_indices("matches!(kind,")
+            .any(|(at, found)| source[at + found.len()..].trim_start().starts_with("\"displaced\""));
+        assert!(!second_allowlist(&announcer), "supervisor.rs keeps its own allowlist again");
+        assert!(!second_allowlist(&lib), "lib.rs keeps its own allowlist again");
+        assert!(second_allowlist("if matches!(kind,\n  \"displaced\" | \"limit-hit\")"), "canary: the matcher sees an allowlist");
+        assert!(!lib.contains("fn announce("));
     }
 
     #[test]

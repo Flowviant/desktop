@@ -43,6 +43,8 @@ pub(crate) fn stderr_tail(err: ChildStderr) -> JoinHandle<Vec<String>> {
 mod tests {
     use super::readable;
 
+    include!("source_pins.rs");
+
     #[test]
     fn stderr_lines_read_as_words() {
         assert_eq!(readable("\u{1b}[31merror:\u{1b}[0m no git repository "), "error: no git repository");
@@ -63,15 +65,20 @@ mod tests {
     }
 
     /// One home: the two readers of a daemon's stderr take the drain from
-    /// here, and a hand-rolled copy coming back fails this.
+    /// here, and a hand-rolled copy coming back anywhere in `src/` fails this.
+    /// The canary: this file's own code must match, or the walk proves nothing.
     #[test]
     fn the_drain_has_one_home() {
-        let code = |source: &str| source.lines().filter(|line| !line.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
-        let (supervisor, connect) = (code(include_str!("supervisor.rs")), code(include_str!("connect.rs")));
-        for (name, source) in [("supervisor.rs", &supervisor), ("connect.rs", &connect), ("lib.rs", &code(include_str!("lib.rs")))] {
-            assert!(!source.contains("tail.remove(0)"), "{name} drains stderr by hand again");
-            assert!(!source.contains("fn readable("), "{name} decodes stderr by hand again");
+        let banned = ["tail.remove(0)", "fn readable("];
+        let home = code(include_str!("daemon_output.rs"));
+        for needle in banned { assert!(home.contains(needle), "canary: daemon_output.rs no longer holds {needle}"); }
+        let sources = rust_sources();
+        assert!(sources.len() >= 10 && sources.iter().any(|(name, _)| name == "daemon_output.rs"), "the walk found src/");
+        for (name, source) in sources.iter().filter(|(name, _)| name != "daemon_output.rs") {
+            let source = code(source);
+            for needle in banned { assert!(!source.contains(needle), "{name} drains or decodes stderr by hand again ({needle})"); }
         }
+        let (supervisor, connect) = (code(include_str!("supervisor.rs")), code(include_str!("connect.rs")));
         assert!(supervisor.contains("child.stderr.take().map(stderr_tail)"));
         assert!(connect.contains("child.stderr.take().map(stderr_tail)"));
     }

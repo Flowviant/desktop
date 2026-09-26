@@ -211,6 +211,16 @@ describe('tray model', () => {
     expect(fixesFor(snapshot(stopped)).find(fix => fix.kind === 'not-running')).toMatchObject({ reason: WSL_STOPPED });
   });
 
+  // Two languages, one sentence: the supervisor records it as the stop reason
+  // when WSL goes away under a served project (`supervisor_rules.rs`), and the
+  // card says it for a distro it finds stopped. A declaration line, never a
+  // comment line, is what matches.
+  it('says the same words the supervisor records when WSL goes away', () => {
+    const rules = readFileSync(new URL('../../src-tauri/src/supervisor_rules.rs', import.meta.url), 'utf8');
+    const declared = rules.match(/^pub\(crate\) const WSL_STOPPED: &str = "(.*)";$/m);
+    expect(declared?.[1]).toBe(WSL_STOPPED);
+  });
+
   it('counts only projects that are on, and a stopped WSL is not amber', () => {
     const off = { ...other('off'), enabled: false };
     expect(machineLine(many(other('a'), other('b'), off))).toBe('Serving 2 projects · v0.98.0');
