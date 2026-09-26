@@ -7,6 +7,8 @@ use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::UpdaterExt;
 
+mod notifications;
+
 fn on() -> bool { true }
 
 /// One project this app serves. `enabled` is the card's switch (absent in
@@ -257,18 +259,14 @@ fn tray_icon(app: &AppHandle, state: &str) {
     }
 }
 
+/// Relay a machine event to the window, and notify when `notifications`
+/// says it is one worth a native notification.
 fn announce(app: &AppHandle, event: &Value) {
     let _ = app.emit("machine-event", event);
     let kind = event.get("event").and_then(Value::as_str).unwrap_or("");
-    if matches!(kind, "displaced" | "stopped-unexpectedly" | "limit-hit" | "update-applied") {
-        let body = event.get("message").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| match kind {
-            "displaced" => "This box stopped serving after another box took the machine".into(),
-            "stopped-unexpectedly" => "The daemon stopped unexpectedly".into(),
-            "update-applied" => "The daemon updated".into(),
-            _ => "A CLI hit its limit".into(),
-        });
-        let _ = app.notification().builder().title("Flowviant machine").body(body).show();
-        if kind != "update-applied" { tray_icon(app, "attention"); }
+    if let Some(notice) = notifications::notification_for_event(kind, event.get("message").and_then(Value::as_str)) {
+        let _ = app.notification().builder().title("Flowviant machine").body(notice.body).show();
+        if notice.attention { tray_icon(app, "attention"); }
     } else if kind == "serving" { tray_icon(app, "serving"); }
 }
 

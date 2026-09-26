@@ -28,10 +28,6 @@ export function trayState(rows: Project[], attention = false): TrayState {
   return 'idle';
 }
 
-export function shouldNotify(event: MachineEvent): boolean {
-  return ['displaced', 'stopped-unexpectedly', 'limit-hit', 'update-applied'].includes(event.event);
-}
-
 export function reduceEvent(state: TrayState, event: MachineEvent): TrayState {
   if (['displaced', 'stopped-unexpectedly', 'limit-hit'].includes(event.event)) return 'attention';
   if (event.event === 'serving' || event.event === 'limit-cleared') return 'serving';
