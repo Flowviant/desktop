@@ -5,6 +5,8 @@
 // under cargo and under plain `rustc --test src/<file>.rs`. One copy of the
 // comment stripper, so every pin matches CODE (CLAUDE.md: "strip comments
 // before matching"), and one tree walk, so a ban sees every file in `src/`.
+// The stripper's own test is in `supervisor_rules.rs`, so it runs once, not
+// once per includer.
 
 /// `source` with every comment gone: `//` to the end of the line (newline
 /// kept) and `/* */`, nested, as one space. String, raw-string and char
@@ -79,17 +81,4 @@ fn rust_sources() -> Vec<(String, String)> {
         .collect();
     sources.sort();
     sources
-}
-
-#[test]
-fn the_stripper_keeps_code_and_literals() {
-    assert_eq!(code("a // gone\nb"), "a \nb");
-    assert_eq!(code("a /* x /* nested */ y */ b"), "a   b");
-    assert_eq!(code("let u = \"https://x\"; // c"), "let u = \"https://x\"; ");
-    assert_eq!(code("let s = \"say \\\"/*\\\" \"; t"), "let s = \"say \\\"/*\\\" \"; t");
-    assert_eq!(code("let q = '\"'; // c\nlet r = '\\''; x"), "let q = '\"'; \nlet r = '\\''; x");
-    assert_eq!(code("fn f<'a>(s: &'a str) {} // c"), "fn f<'a>(s: &'a str) {} ");
-    assert_eq!(code("let p = r#\"a // \"b\" \"#; // c"), "let p = r#\"a // \"b\" \"#; ");
-    assert_eq!(code("/// doc\n//! inner\nfn x() {}"), "\n\nfn x() {}");
-    assert_eq!(code("error // c"), "error ");
 }

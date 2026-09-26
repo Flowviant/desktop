@@ -272,15 +272,18 @@ mod tests {
     fn the_failure_words() {
         assert_eq!(exit_reason(Some("error: no git repository"), Some(1)), "error: no git repository");
         assert_eq!(exit_reason(None, Some(3)), "flowviant exited with code 3");
+        assert_eq!(exit_reason(None, Some(0)), "flowviant exited with code 0", "a zero code is still the code (the sign-in says it too)");
         assert_eq!(exit_reason(None, None), "flowviant exited");
         assert_eq!(stopped_message("flowviant exited"), "flowviant stopped: flowviant exited");
         assert!(WSL_STOPPED.starts_with("WSL isn't running."));
     }
 
-    /// The source half: the loop asks these rules, and none of them is
-    /// written a second time anywhere in `src/`. ("flowviant exited with code"
-    /// is not banned: the sign-in in `connect.rs` words its own exit, with
-    /// its own rule — a zero code says nothing.)
+    /// The source half: the loop asks these rules, the sign-in (`connect.rs`)
+    /// words a login that ended with the same `exit_reason`, and none of them
+    /// is written a second time anywhere in `src/`. The needles are the
+    /// rules' own shapes (`Some("credential-revoked")`, a doubling clamped by
+    /// `.min(`), so a status read of the reason or an unrelated clamp to 60
+    /// is not a copy.
     #[test]
     fn the_loop_asks_these_rules() {
         let supervisor = code(include_str!("supervisor.rs"));
@@ -288,14 +291,15 @@ mod tests {
             "supervisor_rules::exit_reason(", "supervisor_rules::stopped_message(", "supervisor_rules::WSL_STOPPED", ".announce_once()", ".backoff_then_double()", ".served()"] {
             assert!(supervisor.contains(call), "supervisor.rs no longer asks {call}");
         }
+        assert!(code(include_str!("connect.rs")).contains("supervisor_rules::exit_reason("), "connect.rs no longer asks exit_reason");
         let home = code(include_str!("supervisor_rules.rs"));
-        let banned = ["\"credential-revoked\"", ".min(BACKOFF_CAP_SECS)", "const REFUSAL_WINDOW", "const REFUSAL_RETRY", "WSL isn't running", "flowviant stopped: "];
+        let banned = ["Some(\"credential-revoked\")", "* 2).min(", ".min(BACKOFF_CAP_SECS)", "const REFUSAL_WINDOW", "const REFUSAL_RETRY", "WSL isn't running", "flowviant stopped: ", "flowviant exited"];
         for needle in banned { assert!(home.contains(needle), "canary: the home no longer holds {needle}"); }
         let sources = rust_sources();
         assert!(sources.len() >= 10 && sources.iter().any(|(name, _)| name == "supervisor.rs"), "the walk found src/");
         for (name, source) in sources.iter().filter(|(name, _)| name != "supervisor_rules.rs") {
             let source = code(source);
-            for needle in banned.iter().chain(&["(backoff * 2)", ".min(60)"]) {
+            for needle in banned {
                 assert!(!source.contains(needle), "{name} writes {needle} again");
             }
         }
@@ -303,15 +307,36 @@ mod tests {
 
     /// Who holds a supervisor's state: only `supervisor.rs` locks the job and
     /// failure maps; everyone else calls `cancel`, `failure` or `clear_failure`.
+    /// Matched with whitespace gone too, so a lock taken on the next line is
+    /// the same lock, and `try_lock` is a lock.
     #[test]
     fn only_the_supervisor_touches_its_maps() {
+        let squeezed = |source: &str| code(source).chars().filter(|c| !c.is_whitespace()).collect::<String>();
         let sources = rust_sources();
-        let supervisor = code(&sources.iter().find(|(name, _)| name == "supervisor.rs").expect("supervisor.rs").1);
-        for needle in [".jobs.lock()", ".failures.lock()"] {
-            assert!(supervisor.contains(needle), "canary: supervisor.rs no longer holds {needle}");
+        let supervisor = squeezed(&sources.iter().find(|(name, _)| name == "supervisor.rs").expect("supervisor.rs").1);
+        for map in [".jobs.", ".failures."] {
+            assert!(supervisor.contains(&format!("{map}lock()")), "canary: supervisor.rs no longer holds {map}lock()");
             for (name, source) in sources.iter().filter(|(name, _)| name != "supervisor.rs" && name != "supervisor_rules.rs") {
-                assert!(!code(source).contains(needle), "{name} locks {needle} by hand again");
+                let source = squeezed(source);
+                for lock in ["lock()", "try_lock()"] {
+                    assert!(!source.contains(&format!("{map}{lock}")), "{name} takes {map}{lock} by hand again");
+                }
             }
         }
+    }
+
+    /// `source_pins.rs`'s stripper, tested once here rather than in every
+    /// module that includes it.
+    #[test]
+    fn the_stripper_keeps_code_and_literals() {
+        assert_eq!(code("a // gone\nb"), "a \nb");
+        assert_eq!(code("a /* x /* nested */ y */ b"), "a   b");
+        assert_eq!(code("let u = \"https://x\"; // c"), "let u = \"https://x\"; ");
+        assert_eq!(code("let s = \"say \\\"/*\\\" \"; t"), "let s = \"say \\\"/*\\\" \"; t");
+        assert_eq!(code("let q = '\"'; // c\nlet r = '\\''; x"), "let q = '\"'; \nlet r = '\\''; x");
+        assert_eq!(code("fn f<'a>(s: &'a str) {} // c"), "fn f<'a>(s: &'a str) {} ");
+        assert_eq!(code("let p = r#\"a // \"b\" \"#; // c"), "let p = r#\"a // \"b\" \"#; ");
+        assert_eq!(code("/// doc\n//! inner\nfn x() {}"), "\n\nfn x() {}");
+        assert_eq!(code("error // c"), "error ");
     }
 }

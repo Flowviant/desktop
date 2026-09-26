@@ -17,6 +17,7 @@ use crate::connections::{save_connections, Connection};
 use crate::daemon_output::{readable, stderr_tail};
 use crate::machine_log::log_line;
 use crate::supervisor::start_one;
+use crate::supervisor_rules;
 use crate::wsl::{binary_path, parse_wsl_folder, wsl};
 use crate::Controller;
 
@@ -81,9 +82,10 @@ pub fn connect(app: AppHandle, folder: String) -> Result<(), String> {
         let tail = stderr.and_then(|handle| handle.join().ok()).unwrap_or_default();
         log_line(&app, &format!("connect {distro}:{dir}: login ended (completed: {completed}){}", tail.last().map(|l| format!(" — {l}")).unwrap_or_default()));
         if !completed {
-            let reason = tail.last().cloned()
-                .or_else(|| status.ok().and_then(|s| s.code()).filter(|code| *code != 0).map(|code| format!("flowviant exited with code {code}")));
-            fail(match reason { Some(reason) => format!("Connection was not completed: {reason}"), None => "Connection was not completed".into() });
+            // The supervisor's own words for an exit (its last stderr line,
+            // else its code, zero included, else that it exited).
+            let reason = supervisor_rules::exit_reason(tail.last().map(String::as_str), status.ok().and_then(|s| s.code()));
+            fail(format!("Connection was not completed: {reason}"));
         }
         let _ = app.emit("status-changed", ());
     });
