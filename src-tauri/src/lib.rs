@@ -17,7 +17,7 @@
 //!   * `machine_log` — the app's own machines.log;
 //!   * `uninstall` — cleaning WSL on the way out.
 
-use std::{collections::HashMap, fs, sync::{atomic::AtomicBool, Arc, Mutex}, thread, time::Instant};
+use std::{collections::{HashMap, HashSet}, fs, sync::{atomic::AtomicBool, Arc, Mutex}, thread, time::Instant};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_autostart::ManagerExt;
 
@@ -45,7 +45,7 @@ use supervisor::{start_one, stop_daemons};
 use tray::{show_main_window, TrayAnchor};
 
 #[derive(Default)]
-struct Controller { jobs: Mutex<HashMap<String, Arc<AtomicBool>>>, connections: Mutex<Vec<Connection>>, tray_anchor: Mutex<Option<TrayAnchor>>, tray_hidden_at: Mutex<Option<Instant>>, pending_update: Mutex<Option<(tauri_plugin_updater::Update, Vec<u8>)>>, failures: Mutex<HashMap<String, String>>, update_checked: Mutex<Option<Instant>> }
+struct Controller { jobs: Mutex<HashMap<String, Arc<AtomicBool>>>, connections: Mutex<Vec<Connection>>, tray_anchor: Mutex<Option<TrayAnchor>>, tray_hidden_at: Mutex<Option<Instant>>, pending_update: Mutex<Option<(tauri_plugin_updater::Update, Vec<u8>)>>, failures: Mutex<HashMap<String, String>>, standing_by: Mutex<HashSet<String>>, update_checked: Mutex<Option<Instant>> }
 
 /// Launched by "Start at login" (the autostart entry passes this flag), the app
 /// starts in the tray. Launched by a person, it opens its window.

@@ -8,7 +8,10 @@ export type Fix =
   | { kind: 'displaced'; projectId: string; message: string }
   | { kind: 'behind'; projectId: string; latest: string; version: string }
   | { kind: 'inactive'; projectId: string; servingBoxName: string }
-  | { kind: 'not-running'; projectId: string; reason: string | null; wslStopped?: boolean };
+  | { kind: 'not-running'; projectId: string; reason: string | null; wslStopped?: boolean }
+  /** Its daemon is standing down but finishing a deploy first (a fact, not a
+   *  fault): `restartsAfter` when this app's supervisor waits to start it again. */
+  | { kind: 'draining'; projectId: string; deploy: string; restartsAfter: boolean };
 
 /** Said for a project whose WSL distro is not running (`wsl --shutdown`). */
 export const WSL_STOPPED = "WSL isn't running. This project starts again when WSL does — open a WSL terminal, or press Start.";
@@ -21,9 +24,14 @@ export const WSL_STOPPED = "WSL isn't running. This project starts again when WS
 export function fixesFor(snapshot: Snapshot | null, displaced: MachineEvent[] = []): Fix[] {
   if (!snapshot) return [];
   return snapshot.projects.flatMap(project => {
+    // A daemon finishing a deploy is said even under a switch turned off: it
+    // is still running here, and nothing stops the deploy (CLI 2026-09-26).
+    const drain: Fix[] = typeof project.draining === 'string' && project.draining
+      ? [{ kind: 'draining', projectId: project.id, deploy: project.draining, restartsAfter: project.standingBy === true }]
+      : [];
     // A project switched OFF is not a problem to report: it is stopped on purpose.
-    if (project.enabled === false) return [];
-    const fixes: Fix[] = [];
+    if (project.enabled === false) return drain;
+    const fixes: Fix[] = [...drain];
     // Every CLI the machine reports parked by a limit, by its measured id — no
     // CLI-name branch here (it used to drop Antigravity's limit on the floor).
     for (const runtime of project.runtimes) {
@@ -44,6 +52,13 @@ export function fixesFor(snapshot: Snapshot | null, displaced: MachineEvent[] = 
     if (project.running === false && remote?.role !== 'inactive') fixes.push({ kind: 'not-running', projectId: project.id, reason: project.stopReason ?? (project.wslStopped ? WSL_STOPPED : null), wslStopped: project.wslStopped === true });
     return fixes;
   });
+}
+
+/** The waiting line for a daemon finishing a deploy (owner ruling 22,
+ *  2026-09-26). The tray waits with no deadline; switching the project off is
+ *  the way out of the restart, and nothing ever stops the deploy. */
+export function drainLine(fix: { deploy: string; restartsAfter: boolean }): string {
+  return `Finishing a deploy (${fix.deploy})${fix.restartsAfter ? ' — restarting after' : ''}`;
 }
 
 /** A CLI's name in a sentence a person reads: the shared `RUNTIME_LABEL`
@@ -152,7 +167,7 @@ export type ProjectGroup = {
   off: boolean;
 };
 
-const PROJECT_FIXES: Fix['kind'][] = ['displaced', 'inactive', 'not-running'];
+const PROJECT_FIXES: Fix['kind'][] = ['draining', 'displaced', 'inactive', 'not-running'];
 
 /** The groups, the project that needs you first, then the most recently active. */
 export function projectGroups(snapshot: Snapshot | null, fixes: Fix[]): ProjectGroup[] {

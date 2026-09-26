@@ -23,6 +23,9 @@ describe('desktop contract', () => {
     expect(reduceEvent('idle', { event: 'serving' })).toBe('serving');
     expect(reduceEvent('serving', { event: 'limit-hit' })).toBe('attention');
     expect(reduceEvent('attention', { event: 'limit-cleared' })).toBe('serving');
+    // A stand-down says `stopped` and then, when a deploy is still finishing,
+    // `draining`: the box is working until the outcome lands (ruling 22).
+    expect(reduceEvent(reduceEvent('serving', { event: 'stopped' }), { event: 'draining', deploy: 'web → prod' })).toBe('serving');
     expect(trayState([row(true, 'serving')])).toBe('serving');
     expect(trayState([row(null, null)])).toBe('idle');
   });

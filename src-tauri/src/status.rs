@@ -4,7 +4,8 @@
 //! Split out of `lib.rs` (2026-09-26, SOLID F161). One read per RUNNING
 //! distro (never one that is stopped — asking would boot it), each row
 //! stamped with its distro, daemon version, the supervisor's last stop
-//! reason and the card's switch; a saved project in a stopped distro is
+//! reason and the card's switch (and, on a row finishing a deploy, whether
+//! the supervisor waits to restart it); a saved project in a stopped distro is
 //! listed from the saved connection, marked `wslStopped`. The read also
 //! learns names and projects bound from a terminal into the saved list.
 
@@ -13,7 +14,8 @@ use std::collections::HashSet;
 use tauri::{AppHandle, Manager};
 
 use crate::connections::{save_connections, Connection};
-use crate::supervisor::failure;
+use crate::supervisor::{failure, standing_by};
+use crate::supervisor_rules;
 use crate::wsl::{binary_path, run_wsl, running_distros};
 use crate::Controller;
 
@@ -47,6 +49,13 @@ pub fn status(app: AppHandle, remote: Option<bool>) -> Result<Value, String> {
                     for row in rows {
                         row["distro"] = json!(distro);
                         row["daemonVersion"] = distro_version.clone();
+                        // A daemon finishing a deploy (its lock's mark): say whether
+                        // this app waits to start it again after (owner ruling 22).
+                        if let Some(id) = row["id"].as_str().map(str::to_string) {
+                            if let Some(after) = supervisor_rules::restarts_after_drain(row["draining"].as_str(), || standing_by(&app, &id)) {
+                                row["standingBy"] = json!(after);
+                            }
+                        }
                         if row["running"] != json!(true) {
                             if let Some(reason) = row["id"].as_str().and_then(|id| failure(&app, id)) {
                                 row["stopReason"] = json!(reason);

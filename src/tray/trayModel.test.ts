@@ -3,7 +3,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { PROJECT_TINT_COUNT, projectTintIndex } from '@flowviant/shared';
 import { stripComments } from '@flowviant/shared/test/stripComments';
-import { agentLine, deliveredLine, elapsed, fixesFor, headerState, limitHeadline, machineFixes, machineLine, projectGroups, projectLine, projectTint, runtimeLabel, WSL_STOPPED } from './trayModel';
+import { agentLine, deliveredLine, drainLine, elapsed, fixesFor, headerState, limitHeadline, machineFixes, machineLine, projectGroups, projectLine, projectTint, runtimeLabel, WSL_STOPPED } from './trayModel';
 import type { Project, RemoteAgent, Snapshot } from '../model';
 import { stateWord } from './trayModel';
 
@@ -24,6 +24,20 @@ describe('tray model', () => {
     expect(headerState(other, fixesFor(other))).toBe('dim');
     const inactive = snapshot({ ...project, running: false, holder: null, remote: null });
     expect(headerState(inactive, [])).toBe('dim');
+  });
+  it('a daemon finishing a deploy is a fact on its project, never amber, never idle, and said switched off', () => {
+    const draining = snapshot({ ...project, remote: { ...project.remote!, latest: null, agents: [] }, draining: 'web → prod', standingBy: true });
+    const fixes = fixesFor(draining);
+    expect(fixes).toEqual([{ kind: 'draining', projectId: 'p', deploy: 'web → prod', restartsAfter: true }]);
+    expect(headerState(draining, fixes)).toBe('ok');
+    expect(projectGroups(draining, fixes)[0]).toMatchObject({ idle: false, fixes });
+    expect(drainLine(fixes[0] as Extract<typeof fixes[0], { kind: 'draining' }>)).toBe('Finishing a deploy (web → prod) — restarting after');
+    expect(drainLine({ deploy: 'web → prod', restartsAfter: false })).toBe('Finishing a deploy (web → prod)');
+    // Switched off: the drain is still true, nothing else is reported.
+    expect(fixesFor(snapshot({ ...project, enabled: false, draining: 'web → prod' }))).toEqual([{ kind: 'draining', projectId: 'p', deploy: 'web → prod', restartsAfter: false }]);
+    // Unknown (an older daemon, an empty mark) claims nothing.
+    expect(fixesFor(snapshot({ ...project, remote: { ...project.remote!, latest: null }, draining: null }))).toEqual([]);
+    expect(fixesFor(snapshot({ ...project, remote: { ...project.remote!, latest: null }, draining: '' }))).toEqual([]);
   });
   it('counts only measured parked agents for a CLI limit', () => {
     const row = { ...project, runtimes: [{ id: 'codex', installed: true, version: null, parkedByLimit: true, message: 'Wait until 3 PM' }] };

@@ -12,7 +12,7 @@
 import type { RemoteAgent } from '../model';
 import { Button } from '../ui/Button';
 import { RuntimeMark, rowButton } from './TrayParts';
-import { agentLine, elapsed, projectTint, runtimeLabel, stateWord, type Fix, type ProjectGroup } from './trayModel';
+import { agentLine, drainLine, elapsed, projectTint, runtimeLabel, stateWord, type Fix, type ProjectGroup } from './trayModel';
 
 export function TrayProjectGroup({ group, index, on, now, onToggle, onOpen, onStart }: {
   group: ProjectGroup;
@@ -46,7 +46,7 @@ export function TrayProjectGroup({ group, index, on, now, onToggle, onOpen, onSt
   return <section aria-label={name} className="flex flex-col">
     {index > 0 && <div className="mx-[10px] mt-[6px] h-px bg-[hsl(220_14%_94%)]" />}
     {header}
-    {!group.off && group.fixes.map((fix, i) => <ProjectNotice key={`${fix.projectId}-${fix.kind}-${i}`} fix={fix} name={name} onOpen={onOpen} onStart={onStart} />)}
+    {group.fixes.filter(fix => !group.off || fix.kind === 'draining').map((fix, i) => <ProjectNotice key={`${fix.projectId}-${fix.kind}-${i}`} fix={fix} name={name} onOpen={onOpen} onStart={onStart} />)}
     {!group.off && group.agents.map(agent => <AgentRow key={agent.id} agent={agent} limitParked={group.limited.includes(agent.runtime)} now={now} onOpen={onOpen} />)}
     {!group.off && project.remote?.pressure && <div className="px-[10px] py-2 text-xs text-quiet">Waiting for the machine — {project.remote.pressure.reason}.</div>}
   </section>;
@@ -56,6 +56,7 @@ export function TrayProjectGroup({ group, index, on, now, onToggle, onOpen, onSt
 function ProjectNotice({ fix, name, onOpen, onStart }: { fix: Fix; name: string; onOpen: (page: string) => void; onStart: () => void }) {
   const amber = fix.kind === 'displaced';
   return <div className={`mx-1 mb-1 flex flex-col gap-2 rounded-xl px-[10px] py-3 ${amber ? 'bg-amber-wash' : 'bg-hover'}`}>
+    {fix.kind === 'draining' && <div className="text-[13px] font-medium">{drainLine(fix)}</div>}
     {fix.kind === 'displaced' && <p className="m-0 text-xs leading-[1.5]">{fix.message}</p>}
     {fix.kind === 'inactive' && <>
       <div className="text-[13px] font-medium">{fix.servingBoxName} is this project's machine</div>

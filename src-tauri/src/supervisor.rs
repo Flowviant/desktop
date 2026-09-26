@@ -10,7 +10,8 @@
 //! themselves are pure decisions in `supervisor_rules` (std-only, tested with
 //! plain rustc); this file is the I/O that asks them. It is also the one
 //! holder of a supervisor's state: the job map (`start_one`, `cancel`,
-//! `stop_daemons`) and the failure map (`failure`, `clear_failure`).
+//! `stop_daemons`), the failure map (`failure`, `clear_failure`) and the
+//! standing-by set (`stand_by`, read by `standing_by`).
 
 use serde_json::{json, Value};
 use std::{io::{BufRead, BufReader}, process::Stdio, sync::{atomic::{AtomicBool, Ordering}, Arc}, thread, time::{Duration, Instant}};
@@ -34,7 +35,7 @@ fn announce(app: &AppHandle, event: &Value) {
     if let Some(notice) = notifications::notification_for_event(kind, event.get("message").and_then(Value::as_str)) {
         let _ = app.notification().builder().title("Flowviant machine").body(notice.body).show();
         if notice.attention { tray_icon(app, "attention"); }
-    } else if kind == "serving" { tray_icon(app, "serving"); }
+    } else if kind == "serving" || kind == "draining" { tray_icon(app, "serving"); }
 }
 
 /// How often a signalled-away project is checked for being free again.
@@ -102,7 +103,7 @@ fn supervise(app: AppHandle, connection: Connection, cancel: Arc<AtomicBool>) {
         // Something else already serves it here (a `flowviant` in a terminal):
         // starting now would take it over, so stand by until it is gone.
         if supervisor_rules::serving_elsewhere(daemon_running(&connection.distro, &connection.id)) {
-            if !stand_by(&cancel, &connection) { break; }
+            if !stand_by(&app, &cancel, &connection) { break; }
         }
         let binary = match binary_path(&connection.distro) { Ok(path) => path, Err(_) => break };
         let result = wsl(&connection.distro, Some(&connection.dir), &[&binary, "--project", &connection.id, "--dir", &connection.dir, "--json-events"])
@@ -155,7 +156,7 @@ fn supervise(app: AppHandle, connection: Connection, cancel: Arc<AtomicBool>) {
             // here, then serve it again.
             Next::StandBy => {
                 log_line(&app, &format!("{who}: stopped by a signal; standing by until nothing else serves it"));
-                if !stand_by(&cancel, &connection) { break; }
+                if !stand_by(&app, &cancel, &connection) { break; }
                 continue;
             }
             // Said once (told), then tried again quietly: the fix is usually a
@@ -182,11 +183,29 @@ fn supervise(app: AppHandle, connection: Connection, cancel: Arc<AtomicBool>) {
 
 /// Wait while something else serves the project here; true once it is free,
 /// false if the supervisor was cancelled meanwhile.
-fn stand_by(cancel: &AtomicBool, connection: &Connection) -> bool {
-    while nap(cancel, STANDBY_CHECK) {
-        if !supervisor_rules::serving_elsewhere(daemon_running(&connection.distro, &connection.id)) { return true; }
-    }
-    false
+///
+/// NO DEADLINE, BY RULING (owner ruling 22, 2026-09-26). The "something else"
+/// may be a daemon finishing a deploy: a Restart pressed during its drain
+/// stopped it (the stop is obeyed without a signal) and then waits here until
+/// the outcome is reported, which can take the deploy's whole 30 minutes. It
+/// is a wait, not a failed start, so nothing is recorded as a failure; the
+/// card says "restarting after" from the mark set here (`standing_by`), and
+/// switching the project off (a cancel) is the way out.
+fn stand_by(app: &AppHandle, cancel: &AtomicBool, connection: &Connection) -> bool {
+    if let Ok(mut waiting) = app.state::<Controller>().standing_by.lock() { waiting.insert(connection.id.clone()); }
+    let _ = app.emit("status-changed", ());
+    let free = loop {
+        if !nap(cancel, STANDBY_CHECK) { break false; }
+        if !supervisor_rules::serving_elsewhere(daemon_running(&connection.distro, &connection.id)) { break true; }
+    };
+    if let Ok(mut waiting) = app.state::<Controller>().standing_by.lock() { waiting.remove(&connection.id); }
+    free
+}
+
+/// Whether this project's supervisor is standing by for something else that
+/// serves it here (status.rs stamps it on a draining row).
+pub(crate) fn standing_by(app: &AppHandle, id: &str) -> bool {
+    app.state::<Controller>().standing_by.lock().map(|waiting| waiting.contains(id)).unwrap_or(false)
 }
 
 /// Record why a project's daemon is not running (the card shows it) and

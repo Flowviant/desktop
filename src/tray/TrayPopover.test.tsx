@@ -72,6 +72,22 @@ describe('the window card', () => {
     expect(await screen.findByText("studio-pc is this project's machine")).toBeTruthy();
   });
 
+  // Owner ruling 22 (2026-09-26): a Restart during a drain waits, and says so.
+  // The daemon reports what it is finishing (`draining`) and status.rs stamps
+  // whether this app's supervisor is standing by to start it again.
+  it('says a project is finishing a deploy, and whether it restarts after, even switched off', async () => {
+    await mountWindow();
+    const row = fixtures.serving.projects[0];
+    status = { ...fixtures.serving, projects: [{ ...row, draining: 'web → prod', standingBy: true }] };
+    await emit('status-changed');
+    expect(await screen.findByText('Finishing a deploy (web → prod) — restarting after')).toBeTruthy();
+    // Switched off: the restart is off, the deploy still finishes, and it is still said.
+    status = { ...fixtures.serving, projects: [{ ...row, enabled: false, draining: 'web → prod', standingBy: false }] };
+    await emit('status-changed');
+    expect(await screen.findByText('Finishing a deploy (web → prod)')).toBeTruthy();
+    expect(screen.queryByText(/restarting after/)).toBeNull();
+  });
+
   it('offers the restart when update-ready arrives', async () => {
     await mountWindow();
     expect(screen.queryByText(/is ready/)).toBeNull();

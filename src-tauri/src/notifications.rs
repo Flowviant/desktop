@@ -84,7 +84,7 @@ mod tests {
 
     #[test]
     fn nothing_else_reaches_the_os() {
-        for kind in ["serving", "stopped", "limit-cleared", "agent-turn", "card-delivered", ""] {
+        for kind in ["serving", "stopped", "draining", "limit-cleared", "agent-turn", "card-delivered", ""] {
             assert_eq!(notification_for_event(kind, Some("words")), None, "{kind}");
         }
     }

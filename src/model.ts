@@ -2,9 +2,9 @@ export type Runtime = { id: string; installed: boolean; version: string | null; 
 // `runtime` is relayed as stored: a runtime this app has no mark for still lists.
 export type RemoteAgent = { id: string; name: string; status: string; runtime: string; delivered: number; total: number; asks: boolean; parked: boolean; since: string | null };
 export type RemoteProject = { at: string; boxName: string | null; role: 'serving' | 'inactive' | null; servingBoxName: string | null; daemonVersion: string | null; latest: string | null; agents: RemoteAgent[] | null; pressure: { reason: string; at: string } | null };
-export type Project = { id: string; name: string | null; dir: string | null; distro: string; daemonVersion?: string | null; stopReason?: string | null; enabled?: boolean; wslStopped?: boolean; remote?: RemoteProject | null; running: boolean | null; holder: string | null; /** The daemon's own measurement (CLI 2026-09-26); null or absent = unknown, never idle. */ busy?: boolean | null; lastPoll: string | null; logFile: string; runtimes: Runtime[] };
+export type Project = { id: string; name: string | null; dir: string | null; distro: string; daemonVersion?: string | null; stopReason?: string | null; enabled?: boolean; wslStopped?: boolean; remote?: RemoteProject | null; running: boolean | null; holder: string | null; /** The daemon's own measurement (CLI 2026-09-26); null or absent = unknown, never idle. */ busy?: boolean | null; /** What a standing-down daemon is finishing (`web → prod`), from its lock (CLI 2026-09-26); null or absent = not draining, or an older daemon. */ draining?: string | null; /** This app's supervisor is standing by for it, so it starts again once the drain ends (status.rs). */ standingBy?: boolean; lastPoll: string | null; logFile: string; runtimes: Runtime[] };
 export type Snapshot = { schema: number; version: string | null; projects: Project[]; runtimes: Runtime[]; cli: { distro: string; runtimes: Runtime[] }[] };
-export type MachineEvent = { event: string; projectId?: string; message?: string; runtime?: string; from?: string; to?: string; code?: string };
+export type MachineEvent = { event: string; projectId?: string; message?: string; runtime?: string; from?: string; to?: string; code?: string; /** `draining`: what it is finishing, `target → env`. */ deploy?: string };
 export type TrayState = 'serving' | 'idle' | 'attention';
 
 export function parseWslPath(path: string): { distro: string; dir: string } | null {
@@ -30,7 +30,9 @@ export function trayState(rows: Project[], attention = false): TrayState {
 
 export function reduceEvent(state: TrayState, event: MachineEvent): TrayState {
   if (['displaced', 'stopped-unexpectedly', 'limit-hit'].includes(event.event)) return 'attention';
-  if (event.event === 'serving' || event.event === 'limit-cleared') return 'serving';
+  // `draining` follows a stand-down's `stopped`: the box is still working, a
+  // deploy finishing and reporting (CLI 2026-09-26), so it is never idle yet.
+  if (event.event === 'serving' || event.event === 'limit-cleared' || event.event === 'draining') return 'serving';
   if (event.event === 'stopped') return 'idle';
   return state;
 }

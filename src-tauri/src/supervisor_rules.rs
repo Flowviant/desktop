@@ -17,7 +17,9 @@
 //!   * removed from the project or its credential revoked is final; any other
 //!     clean stop was a signal, and the project is served again once nothing
 //!     else serves it;
-//!   * WSL going away is a person's act: recorded on the card, never notified.
+//!   * WSL going away is a person's act: recorded on the card, never notified;
+//!   * a daemon finishing a deploy is waited out with no deadline, and the card
+//!     is told whether this app starts it again after (owner ruling 22).
 
 use std::time::Duration;
 
@@ -51,6 +53,19 @@ pub(crate) fn waits_for_distro(first_start: bool, distro_running: impl FnOnce() 
 /// an unreadable status starts.
 pub(crate) fn serving_elsewhere(measured: Option<bool>) -> bool {
     measured == Some(true)
+}
+
+/// What the card is told about a row whose daemon is finishing a deploy (its
+/// `status --json` `draining`, CLI 2026-09-26): `None` when it is not draining
+/// (nothing is stamped, and the supervisor is not asked), else whether this
+/// app is standing by to start it again once the outcome is reported. The
+/// stand-by itself is `serving_elsewhere`: a draining daemon still holds its
+/// lock, so it measures running, and it is waited out like any other.
+pub(crate) fn restarts_after_drain(draining: Option<&str>, standing_by: impl FnOnce() -> bool) -> Option<bool> {
+    match draining {
+        Some(what) if !what.is_empty() => Some(standing_by()),
+        _ => None,
+    }
 }
 
 /// Removed from the project, or its credential revoked: the server ended this
@@ -199,6 +214,18 @@ mod tests {
     }
 
     #[test]
+    fn a_draining_row_says_whether_it_restarts_after_and_only_a_draining_row_asks() {
+        let never = || -> bool { panic!("standing-by asked of a row that is not draining") };
+        assert_eq!(restarts_after_drain(None, never), None, "an older daemon, or no drain");
+        assert_eq!(restarts_after_drain(Some(""), never), None, "an empty mark claims nothing");
+        assert_eq!(restarts_after_drain(Some("web → prod"), || true), Some(true));
+        assert_eq!(restarts_after_drain(Some("web → prod"), || false), Some(false), "switched off, or stopped: no restart");
+        // The stand-by is the one we already have: a draining daemon holds its
+        // lock and measures running, so a Restart waits it out.
+        assert!(serving_elsewhere(Some(true)));
+    }
+
+    #[test]
     fn events_fill_the_run() {
         let mut fresh = Run::default();
         assert!(fresh.observe(Some("serving"), None), "serving clears the failure");
@@ -292,6 +319,12 @@ mod tests {
             assert!(supervisor.contains(call), "supervisor.rs no longer asks {call}");
         }
         assert!(code(include_str!("connect.rs")).contains("supervisor_rules::exit_reason("), "connect.rs no longer asks exit_reason");
+        assert!(code(include_str!("status.rs")).contains("supervisor_rules::restarts_after_drain("), "status.rs no longer asks restarts_after_drain");
+        // The stand-by has no deadline (owner ruling 22): its loop is the nap and
+        // the measurement, and nothing in it counts time or records a failure.
+        let stand_by = { let at = supervisor.find("fn stand_by(").expect("anchor"); let end = supervisor[at..].find("pub(crate) fn standing_by(").expect("terminator"); &supervisor[at..at + end] };
+        assert!(stand_by.contains("nap(cancel, STANDBY_CHECK)") && stand_by.contains("supervisor_rules::serving_elsewhere("), "the stand-by waits by measurement");
+        for banned in ["elapsed()", "REFUSAL_WINDOW", "record_failure(", "fail_project("] { assert!(!stand_by.contains(banned), "the stand-by gives up or fails: {banned}"); }
         let home = code(include_str!("supervisor_rules.rs"));
         let banned = ["Some(\"credential-revoked\")", "* 2).min(", ".min(BACKOFF_CAP_SECS)", "const REFUSAL_WINDOW", "const REFUSAL_RETRY", "WSL isn't running", "flowviant stopped: ", "flowviant exited"];
         for needle in banned { assert!(home.contains(needle), "canary: the home no longer holds {needle}"); }
@@ -306,7 +339,8 @@ mod tests {
     }
 
     /// Who holds a supervisor's state: only `supervisor.rs` locks the job and
-    /// failure maps; everyone else calls `cancel`, `failure` or `clear_failure`.
+    /// failure maps and the standing-by set; everyone else calls `cancel`,
+    /// `failure`, `clear_failure` or `standing_by`.
     /// Matched with whitespace gone too, so a lock taken on the next line is
     /// the same lock, and `try_lock` is a lock.
     #[test]
@@ -314,7 +348,7 @@ mod tests {
         let squeezed = |source: &str| code(source).chars().filter(|c| !c.is_whitespace()).collect::<String>();
         let sources = rust_sources();
         let supervisor = squeezed(&sources.iter().find(|(name, _)| name == "supervisor.rs").expect("supervisor.rs").1);
-        for map in [".jobs.", ".failures."] {
+        for map in [".jobs.", ".failures.", ".standing_by."] {
             assert!(supervisor.contains(&format!("{map}lock()")), "canary: supervisor.rs no longer holds {map}lock()");
             for (name, source) in sources.iter().filter(|(name, _)| name != "supervisor.rs" && name != "supervisor_rules.rs") {
                 let source = squeezed(source);
