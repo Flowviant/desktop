@@ -32,9 +32,13 @@ describe('desktop contract', () => {
   it('keeps the notification policy in one place, the one that notifies', () => {
     const model = readFileSync(new URL('./model.ts', import.meta.url), 'utf8');
     expect(model).not.toMatch(/shouldNotify/);
+    // `announce` moved with the supervisor out of lib.rs (SOLID F161).
+    const announcer = readFileSync(new URL('../src-tauri/src/supervisor.rs', import.meta.url), 'utf8');
+    expect(announcer).toContain('fn announce(');
+    expect(announcer).toContain('notifications::notification_for_event(');
+    expect(announcer).not.toMatch(/matches!\(kind,\s*"displaced"/);
     const lib = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8');
-    expect(lib).toContain('notifications::notification_for_event(');
-    expect(lib).not.toMatch(/matches!\(kind,\s*"displaced"/);
+    expect(lib).not.toMatch(/fn announce\(|matches!\(kind,\s*"displaced"/);
     const policy = readFileSync(new URL('../src-tauri/src/notifications.rs', import.meta.url), 'utf8');
     expect(policy).toContain('pub fn notification_for_event(');
   });

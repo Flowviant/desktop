@@ -4,7 +4,7 @@
  *
  * The wiring moved into `useTrayController`; these render the real card in
  * window mode with only the Tauri bridge stood in (`invoke`, `listen`, the
- * window and the folder dialog), and fire the events lib.rs fires: a
+ * window and the folder dialog), and fire the events src-tauri fires: a
  * `status-changed` asks for status again, `update-ready` offers the restart,
  * and the connect flow walks begin-connect → folder → waiting on the browser
  * → bound. A preview render proves fixtures still draw with no bridge at all.

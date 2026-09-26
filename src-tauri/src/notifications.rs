@@ -1,8 +1,9 @@
 //! WHICH MACHINE EVENTS BECOME A NATIVE NOTIFICATION, and what each one says.
 //!
-//! Split out of `announce` in `lib.rs` (2026-09-26). The allowlist used to be
-//! written twice: here in Rust, which actually shows the notification, and as
-//! `shouldNotify` in `src/model.ts`, which nothing in the app called — so its
+//! Split out of `announce` (2026-09-26; `announce` now lives in
+//! `supervisor.rs`). The allowlist used to be written twice: here in Rust,
+//! which actually shows the notification, and as `shouldNotify` in
+//! `src/model.ts`, which nothing in the app called — so its
 //! passing test could never notice the native behaviour drifting. The
 //! TypeScript copy is gone; this is the one policy, pure (no `AppHandle`, no
 //! plugin) so its tests compile on their own: `rustc --test src/notifications.rs`.

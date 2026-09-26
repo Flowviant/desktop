@@ -80,7 +80,7 @@ export function useTrayController({ preview, mode = 'tray', previewFlow, preview
     } catch (error) { setFlow({ phase: 'error', message: String(error) }); }
   }, [preview, windowed]);
 
-  // A newer version of this app, downloaded and waiting (lib.rs's update loop).
+  // A newer version of this app, downloaded and waiting (self_update.rs's loop).
   useEffect(() => {
     if (preview) return;
     let active = true;

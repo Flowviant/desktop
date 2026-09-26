@@ -15,7 +15,7 @@
 //!     null (an older daemon, a stale reading) or true all hold the install;
 //!   * a distro whose status could not be read at all holds it too.
 //! Unknown is never idle. The card's "Restart now" is a person's press and is
-//! not gated by this rule (`install_update` → `install_pending`).
+//! not gated by this rule (`install_update` → `install_pending`, self_update.rs).
 
 /// One project this app serves, as its daemon's local `status --json` said it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -73,17 +73,23 @@ mod tests {
     }
 
     /// The source half: the loop asks this rule over the LOCAL status, and the
-    /// card's "Restart now" stays an ungated, explicit install.
+    /// card's "Restart now" stays an ungated, explicit install. The wiring
+    /// moved out of `lib.rs` into `self_update.rs` (SOLID F161); the pin moved
+    /// with it, and `lib.rs` is held to not growing a second copy.
     #[test]
     fn the_loop_asks_this_rule_and_restart_now_is_not_gated() {
-        let lib = include_str!("lib.rs");
-        let idle = lib.find("fn machine_idle(").expect("machine_idle");
-        let end = lib[idle..].find("\n}\n").expect("machine_idle end") + idle;
-        let body = &lib[idle..end];
+        let wiring = include_str!("self_update.rs");
+        let idle = wiring.find("fn machine_idle(").expect("machine_idle");
+        let end = wiring[idle..].find("\n}\n").expect("machine_idle end") + idle;
+        let body = &wiring[idle..end];
         assert!(body.contains("updates::can_auto_install(&reads)"));
         assert!(body.contains("\"status\", \"--json\"]"));
         assert!(!body.contains("--remote"), "the server's agent list is not the measurement");
-        assert!(lib.contains("if staged() && machine_idle(&app) { let _ = install_pending(&app); }"));
-        assert!(lib.contains("fn install_update(app: AppHandle) -> Result<(), String> { install_pending(&app) }"));
+        assert!(wiring.contains("if staged() && machine_idle(&app) { let _ = install_pending(&app); }"));
+        assert!(wiring.contains("fn install_update(app: AppHandle) -> Result<(), String> { install_pending(&app) }"));
+        let lib = include_str!("lib.rs");
+        for moved in ["fn machine_idle(", "fn install_pending(", "fn update_loop(", "can_auto_install"] {
+            assert!(!lib.contains(moved), "lib.rs grew {moved} back");
+        }
     }
 }
