@@ -14,8 +14,9 @@ export type Fix =
 export const WSL_STOPPED = "WSL isn't running. This project starts again when WSL does — open a WSL terminal, or press Start.";
 
 /** "Is this box behind?" is the shared `versionOlderThan` (2026-09-26): the
- *  tray's own comparator was a second spelling of a rule the web and API ask
- *  in `@flowviant/shared`. Strict, and an unreadable version is never behind. */
+ *  tray's own comparator was a second spelling of the rule the web's update
+ *  note (`MachineUpdateNote`) asks too. Strict, and an unreadable version is
+ *  never behind. */
 
 export function fixesFor(snapshot: Snapshot | null, displaced: MachineEvent[] = []): Fix[] {
   if (!snapshot) return [];
