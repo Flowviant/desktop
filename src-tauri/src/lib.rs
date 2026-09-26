@@ -5,12 +5,13 @@ use tauri::{LogicalSize, PhysicalPosition, menu::{CheckMenuItem, Menu, MenuItem}
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
+use tauri_plugin_updater::UpdaterExt;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Connection { id: String, distro: String, dir: String }
 
 #[derive(Default)]
-struct Controller { jobs: Mutex<HashMap<String, Arc<AtomicBool>>>, connections: Mutex<Vec<Connection>>, tray_anchor: Mutex<Option<TrayAnchor>>, tray_hidden_at: Mutex<Option<Instant>> }
+struct Controller { jobs: Mutex<HashMap<String, Arc<AtomicBool>>>, connections: Mutex<Vec<Connection>>, tray_anchor: Mutex<Option<TrayAnchor>>, tray_hidden_at: Mutex<Option<Instant>>, pending_update: Mutex<Option<(tauri_plugin_updater::Update, Vec<u8>)>> }
 
 #[derive(Clone, Copy)]
 struct TrayAnchor { right: f64, bottom: f64, left: f64, top: f64, work_right: f64, work_bottom: f64, scale: f64 }
@@ -29,6 +30,7 @@ fn save_connections(app: &AppHandle) -> Result<(), String> {
 
 /// Every wsl.exe this app starts is a console program; from a GUI process each
 /// one would flash its own console window unless told not to.
+#[cfg_attr(not(windows), allow(unused_mut))]
 fn quiet(mut cmd: Command) -> Command {
     #[cfg(windows)]
     {
@@ -502,13 +504,102 @@ fn launch_uninstaller() -> Result<(), String> {
     Command::new(uninstaller).spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
-fn quit(app: &AppHandle) {
-    let rows = app.state::<Controller>().connections.lock().unwrap().clone();
+/// Stop every daemon this app started, the way `flowviant stop` does.
+fn stop_daemons(app: &AppHandle) {
+    let rows = app.state::<Controller>().connections.lock().map(|rows| rows.clone()).unwrap_or_default();
+    if let Ok(mut jobs) = app.state::<Controller>().jobs.lock() {
+        for (_, cancel) in jobs.drain() { cancel.store(true, Ordering::SeqCst); }
+    }
     for row in rows {
         if let Ok(binary) = binary_path(&row.distro) { let _ = run_wsl(&row.distro, None, &[&binary, "stop", "--project", &row.id]); }
     }
+}
+
+fn quit(app: &AppHandle) {
+    stop_daemons(app);
     app.exit(0);
 }
+
+// ── Updating the app itself ──────────────────────────────────────────────────
+//
+// The app checks its manifest (`/dl/desktop/latest.json`, signed with the key in
+// tauri.conf.json) a minute after it starts and every six hours, and downloads a
+// newer installer in the background. It installs ON ITS OWN only when nothing is
+// working on this computer: installing stops the daemons, and a turn cut off
+// mid-way is lost work. "Nothing working" is measured per project this computer
+// SERVES (an inactive project's agents run elsewhere); anything unmeasured counts
+// as busy. The card also offers "Restart now" (a person's press, confirmed).
+// The installer runs passively with /UPDATE (so the uninstall-cleanup hook skips)
+// and relaunches the app with its own arguments, so a tray start stays in the tray.
+
+const UPDATE_CHECK_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
+const UPDATE_TICK: Duration = Duration::from_secs(15 * 60);
+
+async fn stage_update(app: &AppHandle) -> Result<(), String> {
+    let Some(update) = app.updater().map_err(|e| e.to_string())?.check().await.map_err(|e| e.to_string())? else { return Ok(()) };
+    let bytes = update.download(|_, _| {}, || {}).await.map_err(|e| e.to_string())?;
+    let version = update.version.clone();
+    *app.state::<Controller>().pending_update.lock().map_err(|e| e.to_string())? = Some((update, bytes));
+    let _ = app.emit("update-ready", json!({ "version": version }));
+    Ok(())
+}
+
+/// True only when every project this computer serves reports no working agent.
+fn machine_idle(app: &AppHandle) -> bool {
+    let rows = app.state::<Controller>().connections.lock().map(|rows| rows.clone()).unwrap_or_default();
+    let distros: HashSet<String> = rows.iter().map(|row| row.distro.clone()).collect();
+    for distro in distros {
+        let Ok(binary) = binary_path(&distro) else { return false };
+        let Ok(raw) = run_wsl(&distro, None, &[&binary, "status", "--json", "--remote"]) else { return false };
+        let Ok(value) = serde_json::from_str::<Value>(&raw) else { return false };
+        for project in value["projects"].as_array().into_iter().flatten() {
+            if !rows.iter().any(|row| project["id"] == json!(row.id)) { continue; }
+            match project["remote"]["role"].as_str() {
+                Some("inactive") => continue,
+                Some("serving") => (),
+                _ => return false,
+            }
+            let Some(agents) = project["remote"]["agents"].as_array() else { return false };
+            if agents.iter().any(|agent| agent["status"] == "working" && agent["parked"] != json!(true)) { return false; }
+        }
+    }
+    true
+}
+
+fn install_pending(app: &AppHandle) -> Result<(), String> {
+    let staged = app.state::<Controller>().pending_update.lock().map_err(|e| e.to_string())?.take();
+    let Some((update, bytes)) = staged else { return Err("No update is ready".into()) };
+    stop_daemons(app);
+    // On Windows this starts the installer and exits the process.
+    update.install(bytes).map_err(|e| e.to_string())?;
+    app.restart();
+}
+
+fn update_loop(app: AppHandle) {
+    if cfg!(debug_assertions) { return; }
+    thread::spawn(move || {
+        thread::sleep(Duration::from_secs(60));
+        let mut checked: Option<Instant> = None;
+        loop {
+            let staged = || app.state::<Controller>().pending_update.lock().map(|p| p.is_some()).unwrap_or(false);
+            if !staged() && checked.map_or(true, |at| at.elapsed() >= UPDATE_CHECK_EVERY) {
+                checked = Some(Instant::now());
+                let _ = tauri::async_runtime::block_on(stage_update(&app));
+            }
+            if staged() && machine_idle(&app) { let _ = install_pending(&app); }
+            thread::sleep(UPDATE_TICK);
+        }
+    });
+}
+
+#[tauri::command]
+fn pending_update(app: AppHandle) -> Option<String> {
+    app.state::<Controller>().pending_update.lock().ok().and_then(|p| p.as_ref().map(|(update, _)| update.version.clone()))
+}
+
+/// The card's "Restart now": a person chose to update while work may be running.
+#[tauri::command(async)]
+fn install_update(app: AppHandle) -> Result<(), String> { install_pending(&app) }
 
 #[tauri::command(async)]
 fn quit_app(app: AppHandle) { quit(&app); }
@@ -560,7 +651,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![status, connect, open_connect_page, project_action, open_project, set_tray_state, fit_tray, hide_tray, show_main, quit_app])
+        .invoke_handler(tauri::generate_handler![status, connect, open_connect_page, project_action, open_project, set_tray_state, fit_tray, hide_tray, show_main, quit_app, pending_update, install_update])
         .setup(|app| {
             let handle = app.handle();
             if let Ok(path) = config_path(handle) {
@@ -617,6 +708,7 @@ pub fn run() {
                 });
             }
             if !std::env::args().any(|arg| arg == AUTOSTART_ARG) { show_main_window(handle); }
+            update_loop(handle.clone());
             let startup = handle.clone();
             thread::spawn(move || {
                 let _ = status(startup.clone(), None);

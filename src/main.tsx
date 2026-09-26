@@ -19,7 +19,7 @@ if (tray) {
     const snapshot = fixtures[params.get('fixture') ?? 'serving'] ?? fixtures.serving;
     const flow: ConnectFlow | undefined = flows[params.get('flow') ?? ''];
     if (previewView === 'tray') document.body.classList.add('tray-preview');
-    root.render(<React.StrictMode><TrayPopover preview={snapshot} previewFlow={flow} mode={previewView} /></React.StrictMode>);
+    root.render(<React.StrictMode><TrayPopover preview={snapshot} previewFlow={flow} previewUpdate={params.get('update') ?? undefined} mode={previewView} /></React.StrictMode>);
   });
 } else {
   root.render(<React.StrictMode><TrayPopover mode="window" /></React.StrictMode>);

@@ -40,12 +40,14 @@ function ConnectBlock({ flow, onConnect, onReopen }: { flow: ConnectFlow | null;
 /** The one Flowviant Machines surface (frames 1c, 1d, 1e). `tray` is the
  *  popover over the notification area; `window` is the same card in the app's
  *  own window, which a launch opens and which runs the connect flow. */
-export function TrayPopover({ preview, mode = 'tray', previewFlow }: { preview?: Snapshot; mode?: 'tray' | 'window'; previewFlow?: ConnectFlow }) {
+export function TrayPopover({ preview, mode = 'tray', previewFlow, previewUpdate }: { preview?: Snapshot; mode?: 'tray' | 'window'; previewFlow?: ConnectFlow; previewUpdate?: string }) {
   const windowed = mode === 'window';
   const [snapshot, setSnapshot] = useState<Snapshot | null>(preview ?? null);
   const [visible, setVisible] = useState(Boolean(preview) || windowed);
   const [flow, setFlow] = useState<ConnectFlow | null>(previewFlow ?? null);
   const [tray, setTray] = useState<TrayState>('idle');
+  const [update, setUpdate] = useState<string | null>(previewUpdate ?? null);
+  const [confirmUpdate, setConfirmUpdate] = useState(false);
   const [displaced, setDisplaced] = useState<MachineEvent[]>([]);
   const [confirmQuit, setConfirmQuit] = useState(false);
   const [expanded, setExpanded] = useState<'machines' | 'board' | null>(null);
@@ -84,6 +86,15 @@ export function TrayPopover({ preview, mode = 'tray', previewFlow }: { preview?:
       await invoke('connect', { folder });
     } catch (error) { setFlow({ phase: 'error', message: String(error) }); }
   }, [preview, windowed]);
+
+  // A newer version of this app, downloaded and waiting (lib.rs's update loop).
+  useEffect(() => {
+    if (preview) return;
+    let active = true;
+    void invoke<string | null>('pending_update').then(version => { if (active && version) setUpdate(version); }).catch(() => {});
+    const off = listen<{ version: string }>('update-ready', event => { if (active) setUpdate(event.payload.version); });
+    return () => { active = false; void off.then(stop => stop()); };
+  }, [preview]);
 
   useEffect(() => {
     if (preview || !windowed) return;
@@ -249,6 +260,14 @@ export function TrayPopover({ preview, mode = 'tray', previewFlow }: { preview?:
       <span className="text-xs leading-[1.5] text-quiet">Pick your repository's folder inside WSL, then approve it in your browser.</span>
       <Button tone="solid" className="self-start" onClick={() => void connect()}>Connect a project</Button>
     </div>) : <>
+      {update && <div className="mx-1 mb-[6px] flex flex-col gap-1 rounded-xl bg-hover p-[10px]">
+        <div className="text-[13px] font-medium">Flowviant Machines {update} is ready</div>
+        {confirmUpdate
+          ? <><p className="m-0 text-xs leading-[1.5] text-quiet">It closes, updates and opens again. Anything running on this computer stops first.</p>
+              <div className="flex gap-2 pt-1"><Button tone="solid" onClick={() => { if (!preview) void invoke('install_update').catch(error => { setConfirmUpdate(false); setNotice(String(error)); }); }}>Restart now</Button><Button tone="quiet" onClick={() => setConfirmUpdate(false)}>Cancel</Button></div></>
+          : <><p className="m-0 text-xs leading-[1.5] text-quiet">It installs itself when nothing is running on this computer.</p>
+              <Button className="mt-1 self-start" onClick={() => setConfirmUpdate(true)}>Restart now</Button></>}
+      </div>}
       {machine.map(machineBlock)}
       {groups.map(groupSection)}
       <div className="mx-[10px] my-[6px] h-px bg-hairline" />

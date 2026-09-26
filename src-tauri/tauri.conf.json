@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Flowviant",
-  "version": "0.0.8",
+  "version": "0.0.9",
   "identifier": "com.flowviant.desktop",
   "build": {
     "beforeDevCommand": "npm run web:dev --workspace desktop",
@@ -63,8 +63,11 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQ2OUNFQzdENjQ0NDE5MgpSV1NTUVVUV3g4NXBEUitaTVZqUnhzRDd5RTF5MWVYRFpNQ1ZwaDBQSEFRd1M2TGFpREVuaElRdgo=",
       "endpoints": [
-        "https://api.flowviant.com/desktop/latest.json"
-      ]
+        "https://api.flowviant.com/dl/desktop/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }
