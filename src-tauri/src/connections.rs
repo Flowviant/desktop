@@ -2,9 +2,14 @@
 //!
 //! Split out of `lib.rs` (2026-09-26, SOLID F161). A connection is one
 //! project bound to one folder in one WSL distro; the list lives in
-//! `connections.json` under the app's config dir and in `Controller`. Every
-//! other module reads rows through here; the uninstaller reads the same file
-//! by its Windows path because it runs with no Tauri app (`uninstall.rs`).
+//! `connections.json` under the app's config dir and in `Controller`. This
+//! module owns the row's shape and the file: loading, saving, and finding one
+//! row by id. It does not own every reader of the in-memory list — the
+//! launch (`lib.rs`), the card's read (`status`), sign-in (`connect`), a row's
+//! presses (`project_commands`), the update gate (`self_update`) and
+//! `stop_daemons` (`supervisor`) lock `Controller.connections` themselves, and
+//! whoever changes it calls `save_connections`. The uninstaller reads the same
+//! file by its Windows path because it runs with no Tauri app (`uninstall.rs`).
 
 use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf};
