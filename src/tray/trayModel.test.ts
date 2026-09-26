@@ -50,6 +50,9 @@ describe('tray model', () => {
   it('relays displaced messages and shows local not running', () => {
     expect(fixesFor(snapshot(project), [{ event: 'displaced', projectId: 'p', message: 'It moved.' }]).some(fix => fix.kind === 'displaced' && fix.message === 'It moved.')).toBe(true);
     expect(fixesFor(snapshot({ ...project, running: false, remote: null })).some(fix => fix.kind === 'not-running')).toBe(true);
+    // The daemon's own last words ride to the card; none is said as none.
+    expect(fixesFor(snapshot({ ...project, running: false, remote: null, stopReason: 'error: this project is not connected to this repository.' })).find(fix => fix.kind === 'not-running')).toMatchObject({ reason: 'error: this project is not connected to this repository.' });
+    expect(fixesFor(snapshot({ ...project, running: false, remote: null })).find(fix => fix.kind === 'not-running')).toMatchObject({ reason: null });
   });
   it('formats elapsed time and singular cards, while asks take precedence', () => {
     expect(elapsed('2026-09-25T10:00:00Z', Date.parse('2026-09-25T11:05:30Z'))).toBe('1h 5m');

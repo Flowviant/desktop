@@ -5,7 +5,7 @@ export type Fix =
   | { kind: 'displaced'; projectId: string; message: string }
   | { kind: 'behind'; projectId: string; latest: string; version: string }
   | { kind: 'inactive'; projectId: string; servingBoxName: string }
-  | { kind: 'not-running'; projectId: string };
+  | { kind: 'not-running'; projectId: string; reason: string | null };
 
 export function olderVersion(version: string, latest: string): boolean {
   const parse = (value: string) => /^v?(\d+)\.(\d+)\.(\d+)(?:[-+][\w.-]+)?$/.exec(value.trim())?.slice(1, 4).map(Number);
@@ -37,7 +37,7 @@ export function fixesFor(snapshot: Snapshot | null, displaced: MachineEvent[] = 
     if (remote?.role === 'inactive' && remote.servingBoxName && remote.boxName && remote.servingBoxName !== remote.boxName) {
       fixes.push({ kind: 'inactive', projectId: project.id, servingBoxName: remote.servingBoxName });
     }
-    if (project.running === false && remote?.role !== 'inactive') fixes.push({ kind: 'not-running', projectId: project.id });
+    if (project.running === false && remote?.role !== 'inactive') fixes.push({ kind: 'not-running', projectId: project.id, reason: project.stopReason ?? null });
     return fixes;
   });
 }

@@ -2,7 +2,7 @@ export type Runtime = { id: string; installed: boolean; version: string | null; 
 // `runtime` is relayed as stored: a runtime this app has no mark for still lists.
 export type RemoteAgent = { id: string; name: string; status: string; runtime: string; delivered: number; total: number; asks: boolean; parked: boolean; since: string | null };
 export type RemoteProject = { at: string; boxName: string | null; role: 'serving' | 'inactive' | null; servingBoxName: string | null; daemonVersion: string | null; latest: string | null; agents: RemoteAgent[] | null; pressure: { reason: string; at: string } | null };
-export type Project = { id: string; name: string | null; dir: string | null; distro: string; daemonVersion?: string | null; remote?: RemoteProject | null; running: boolean | null; holder: string | null; lastPoll: string | null; logFile: string; runtimes: Runtime[] };
+export type Project = { id: string; name: string | null; dir: string | null; distro: string; daemonVersion?: string | null; stopReason?: string | null; remote?: RemoteProject | null; running: boolean | null; holder: string | null; lastPoll: string | null; logFile: string; runtimes: Runtime[] };
 export type Snapshot = { schema: number; version: string | null; projects: Project[]; runtimes: Runtime[]; cli: { distro: string; runtimes: Runtime[] }[] };
 export type MachineEvent = { event: string; projectId?: string; message?: string; runtime?: string; from?: string; to?: string; code?: string };
 export type TrayState = 'serving' | 'idle' | 'attention';

@@ -11,7 +11,7 @@ use tauri_plugin_updater::UpdaterExt;
 struct Connection { id: String, distro: String, dir: String }
 
 #[derive(Default)]
-struct Controller { jobs: Mutex<HashMap<String, Arc<AtomicBool>>>, connections: Mutex<Vec<Connection>>, tray_anchor: Mutex<Option<TrayAnchor>>, tray_hidden_at: Mutex<Option<Instant>>, pending_update: Mutex<Option<(tauri_plugin_updater::Update, Vec<u8>)>> }
+struct Controller { jobs: Mutex<HashMap<String, Arc<AtomicBool>>>, connections: Mutex<Vec<Connection>>, tray_anchor: Mutex<Option<TrayAnchor>>, tray_hidden_at: Mutex<Option<Instant>>, pending_update: Mutex<Option<(tauri_plugin_updater::Update, Vec<u8>)>>, failures: Mutex<HashMap<String, String>> }
 
 #[derive(Clone, Copy)]
 struct TrayAnchor { right: f64, bottom: f64, left: f64, top: f64, work_right: f64, work_bottom: f64, scale: f64 }
@@ -217,39 +217,94 @@ fn announce(app: &AppHandle, event: &Value) {
     } else if kind == "serving" { tray_icon(app, "serving"); }
 }
 
+/// How long a start may run before its exit counts as a stop rather than a
+/// refusal. A daemon that will not serve (another project is bound to this repo,
+/// the folder is not the one that was connected, a newer daemon holds the lock)
+/// says so and exits within seconds.
+const REFUSAL_WINDOW: Duration = Duration::from_secs(60);
+
+/// Supervise one project's daemon: restart it when it stops, but never loop on a
+/// refusal and never repeat the notification.
+///
+/// This used to restart ANY exit that did not say "stopped" and notify each time,
+/// with the daemon's stderr thrown away. A daemon refusing to start exits at
+/// once, the next start refuses again, so a person got "The daemon stopped
+/// unexpectedly" up to once a minute forever, with no reason (2026-09-25).
+/// Now its last stderr line is the reason; a start that ends inside
+/// REFUSAL_WINDOW without ever serving is not retried (said once, in its words;
+/// the card offers Start); and a daemon that did run is restarted with backoff
+/// but announced only once until it serves again.
 fn supervise(app: AppHandle, connection: Connection, cancel: Arc<AtomicBool>) {
     let mut backoff = 2;
+    let mut told = false;
     loop {
         if cancel.load(Ordering::SeqCst) { break; }
         let binary = match binary_path(&connection.distro) { Ok(path) => path, Err(_) => break };
         let result = wsl(&connection.distro, Some(&connection.dir), &[&binary, "--project", &connection.id, "--dir", &connection.dir, "--json-events"])
-            .stdout(Stdio::piped()).stderr(Stdio::null()).spawn();
+            .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn();
         let Ok(mut child) = result else {
-            announce(&app, &json!({"event":"stopped-unexpectedly", "projectId":connection.id}));
+            fail_project(&app, &connection.id, "Could not start wsl.exe", &mut told);
             break;
         };
+        let started = Instant::now();
+        let stderr = child.stderr.take().map(|err| thread::spawn(move || {
+            let mut tail: Vec<String> = Vec::new();
+            for line in BufReader::new(err).lines().map_while(Result::ok) {
+                let line = readable(&line);
+                if line.is_empty() { continue; }
+                tail.push(line);
+                if tail.len() > 5 { tail.remove(0); }
+            }
+            tail
+        }));
         let mut displaced = false;
         let mut clean_stop = false;
+        let mut served = false;
         if let Some(stdout) = child.stdout.take() {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                if let Ok(mut event) = serde_json::from_str::<Value>(&line) {
-                    if event.get("event").and_then(Value::as_str) == Some("displaced") { displaced = true; }
-                    if event.get("event").and_then(Value::as_str) == Some("stopped") { clean_stop = true; }
+                if let Ok(mut event) = serde_json::from_str::<Value>(&readable(&line)) {
+                    match event.get("event").and_then(Value::as_str) {
+                        Some("displaced") => displaced = true,
+                        Some("stopped") => clean_stop = true,
+                        Some("serving") => { served = true; told = false; backoff = 2; clear_failure(&app, &connection.id); }
+                        _ => (),
+                    }
                     event["projectId"] = json!(connection.id);
                     announce(&app, &event);
                 }
             }
         }
-        let _ = child.wait();
+        let status = child.wait();
+        let tail = stderr.and_then(|handle| handle.join().ok()).unwrap_or_default();
         let _ = app.emit("status-changed", ());
         if cancel.load(Ordering::SeqCst) || displaced || clean_stop { break; }
-        announce(&app, &json!({"event":"stopped-unexpectedly", "projectId":connection.id}));
+        let reason = tail.last().cloned()
+            .or_else(|| status.ok().and_then(|s| s.code()).map(|code| format!("flowviant exited with code {code}")))
+            .unwrap_or_else(|| "flowviant exited".into());
+        if !served && started.elapsed() < REFUSAL_WINDOW {
+            fail_project(&app, &connection.id, &reason, &mut told);
+            break;
+        }
+        fail_project(&app, &connection.id, &reason, &mut told);
         for _ in 0..backoff * 10 { if cancel.load(Ordering::SeqCst) { break; } thread::sleep(Duration::from_millis(100)); }
         backoff = (backoff * 2).min(60);
     }
     if let Ok(mut jobs) = app.state::<Controller>().jobs.lock() {
         if jobs.get(&connection.id).is_some_and(|current| Arc::ptr_eq(current, &cancel)) { jobs.remove(&connection.id); }
     }
+}
+
+/// Record why a project's daemon is not running (the card shows it) and notify,
+/// once, until it serves again.
+fn fail_project(app: &AppHandle, id: &str, reason: &str, told: &mut bool) {
+    if let Ok(mut failures) = app.state::<Controller>().failures.lock() { failures.insert(id.to_string(), reason.to_string()); }
+    let event = json!({ "event": "stopped-unexpectedly", "projectId": id, "message": format!("flowviant stopped: {reason}") });
+    if *told { let _ = app.emit("machine-event", &event); } else { announce(app, &event); *told = true; }
+    let _ = app.emit("status-changed", ());
+}
+
+fn clear_failure(app: &AppHandle, id: &str) {
+    if let Ok(mut failures) = app.state::<Controller>().failures.lock() { failures.remove(id); }
 }
 
 fn start_one(app: &AppHandle, connection: Connection) -> Result<(), String> {
@@ -295,6 +350,11 @@ fn status(app: AppHandle, remote: Option<bool>) -> Result<Value, String> {
                     for row in rows {
                         row["distro"] = json!(distro);
                         row["daemonVersion"] = distro_version.clone();
+                        if row["running"] != json!(true) {
+                            if let Some(reason) = row["id"].as_str().and_then(|id| app.state::<Controller>().failures.lock().ok().and_then(|f| f.get(id).cloned())) {
+                                row["stopReason"] = json!(reason);
+                            }
+                        }
                         if let (Some(id), Some(dir)) = (row["id"].as_str(), row["dir"].as_str()) {
                             if let Ok(mut connections) = app.state::<Controller>().connections.lock() {
                                 if !connections.iter().any(|c| c.id == id) { connections.push(Connection { id: id.into(), distro: distro.clone(), dir: dir.into() }); }
@@ -412,7 +472,7 @@ fn project_action(app: AppHandle, id: String, action: String) -> Result<(), Stri
         run_wsl(&row.distro, None, &[&binary, "stop", "--project", &id])?;
     }
     match action.as_str() {
-        "start" | "restart" => start_one(&app, row)?,
+        "start" | "restart" => { clear_failure(&app, &id); start_one(&app, row)? },
         "disconnect" | "forget" => {
             let verb = if action == "disconnect" { "--remove" } else { "--forget" };
             let raw = run_wsl(&row.distro, None, &[&binary, "machines", verb, &id, "--yes", "--json"])?;
@@ -711,9 +771,13 @@ pub fn run() {
             update_loop(handle.clone());
             let startup = handle.clone();
             thread::spawn(move || {
-                let _ = status(startup.clone(), None);
+                // A project whose daemon already runs (started from a terminal) is left
+                // alone: a second start in the same repo would take it over.
+                let running: HashSet<String> = status(startup.clone(), None).ok()
+                    .and_then(|v| v["projects"].as_array().cloned()).unwrap_or_default().iter()
+                    .filter(|p| p["running"] == json!(true)).filter_map(|p| p["id"].as_str().map(str::to_string)).collect();
                 let rows = startup.state::<Controller>().connections.lock().unwrap().clone();
-                for row in rows { let _ = start_one(&startup, row); }
+                for row in rows { if !running.contains(&row.id) { let _ = start_one(&startup, row); } }
                 let _ = startup.emit("status-changed", ());
             });
             Ok(())

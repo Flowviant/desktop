@@ -211,7 +211,7 @@ export function TrayPopover({ preview, mode = 'tray', previewFlow, previewUpdate
         {/* Moving the machine is owner-only and needs a signed-in person; the web Machines page has that action. */}
         <Button className="self-start" onClick={() => void openProject(fix.projectId, 'machines')}>Make it the machine</Button>
       </>}
-      {fix.kind === 'not-running' && <><div className="text-[13px] font-medium">Not running</div><Button className="self-start" onClick={() => void start(fix.projectId)}>Start</Button></>}
+      {fix.kind === 'not-running' && <><div className="text-[13px] font-medium">Not running</div>{fix.reason && <p className="m-0 break-words text-xs leading-[1.5] text-quiet">{fix.reason}</p>}<Button className="self-start" onClick={() => void start(fix.projectId)}>Start</Button></>}
     </div>;
   }
 
