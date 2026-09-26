@@ -10,7 +10,8 @@
     "web:build": "vite build",
     "web:dev": "vite --host",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run && bun run test:rust",
+    "test:rust": "sh scripts/test-rust.sh"
   },
   "dependencies": {
     "@flowviant/shared": "*",

@@ -61,8 +61,10 @@ fn code(source: &str) -> String {
 }
 
 /// Every `.rs` file in `src/` as (file name, source), sorted by name. Under
-/// cargo `src/` is the manifest's; under plain rustc it is this file's folder,
-/// relative to where rustc ran (run the test binary from there).
+/// cargo `src/` is the manifest's; under plain rustc it is this file's folder
+/// as rustc was given it. `scripts/test-rust.sh` passes an absolute path, so
+/// that binary runs from anywhere; a hand-run `rustc --test src/<file>.rs` is
+/// relative, so run its binary from `src-tauri`, where rustc ran.
 #[allow(dead_code)]
 fn rust_sources() -> Vec<(String, String)> {
     use std::path::{Path, PathBuf};
