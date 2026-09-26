@@ -50,6 +50,8 @@ export function TrayPopover({ preview, mode = 'tray', previewFlow, previewUpdate
   const [confirmUpdate, setConfirmUpdate] = useState(false);
   const [appVersion, setAppVersion] = useState<string | null>(preview ? '0.0.11' : null);
   const [checking, setChecking] = useState<'idle' | 'checking' | 'current' | 'failed'>('idle');
+  /** The switch's own answer until the next status arrives (a stop takes a moment). */
+  const [switching, setSwitching] = useState<Record<string, boolean>>({});
   const [displaced, setDisplaced] = useState<MachineEvent[]>([]);
   const [confirmQuit, setConfirmQuit] = useState(false);
   const [expanded, setExpanded] = useState<'machines' | 'board' | null>(null);
@@ -183,6 +185,14 @@ export function TrayPopover({ preview, mode = 'tray', previewFlow, previewUpdate
     catch (error) { setNotice(String(error)); }
   }
 
+  async function setEnabled(id: string, enabled: boolean) {
+    if (preview) return;
+    setSwitching(current => ({ ...current, [id]: enabled }));
+    try { await invoke('set_enabled', { id, enabled }); await refresh(); }
+    catch (error) { setNotice(String(error)); }
+    finally { setSwitching(current => { const next = { ...current }; delete next[id]; return next; }); }
+  }
+
   async function start(id: string) {
     if (preview) return;
     try { await invoke('project_action', { id, action: 'start' }); await refresh(); }
@@ -237,19 +247,29 @@ export function TrayPopover({ preview, mode = 'tray', previewFlow, previewUpdate
     const { project } = group;
     const name = project.name ?? project.id;
     const tint = projectTint(project.id);
-    const header = <div className={`flex items-center gap-[10px] px-[10px] ${group.idle ? 'py-[10px]' : 'pb-1 pt-[10px]'}`}>
+    const on = switching[project.id] ?? !group.off;
+    const folded = group.idle || group.off;
+    const header = <div className={`flex items-center gap-[10px] px-[10px] ${folded ? 'py-[10px]' : 'pb-1 pt-[10px]'}`}>
       <span aria-hidden className="flex h-[14px] w-[14px] shrink-0 items-center justify-center rounded-[4px] text-[9px] font-bold" style={{ backgroundImage: `linear-gradient(${tint.angle}deg, ${tint.from}, ${tint.to})`, color: tint.ink }}>{name.slice(0, 1).toUpperCase()}</span>
-      <span className={`min-w-0 truncate text-xs font-semibold ${group.idle || group.inactive ? '' : 'flex-1'}`}>{name}</span>
+      <span className={`min-w-0 truncate text-xs font-semibold ${folded || group.inactive ? '' : 'flex-1'} ${group.off ? 'text-quiet' : ''}`}>{name}</span>
       {group.inactive && <span className="min-w-0 flex-1 text-[11px] uppercase tracking-[.05em] text-quiet">inactive</span>}
-      {group.idle && !group.inactive && <span className="min-w-0 flex-1 truncate text-xs text-quiet">nothing running</span>}
+      {group.off && <span className="min-w-0 flex-1 truncate text-xs text-quiet">off</span>}
+      {group.idle && !group.inactive && !group.off && <span className="min-w-0 flex-1 truncate text-xs text-quiet">nothing running</span>}
+      {/* ON/OFF PER PROJECT (2026-09-25): off stops this project's daemon and
+          keeps it stopped, launch included; on starts it and keeps it running. */}
+      <button role="switch" aria-checked={on} aria-label={`${name} on this computer`} title={on ? 'On: this computer serves it' : 'Off: stopped here'}
+        className={`relative h-4 w-[26px] shrink-0 rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${on ? 'bg-ink' : 'bg-[hsl(220_14%_84%)]'}`}
+        onClick={() => void setEnabled(project.id, !on)}>
+        <span className={`absolute top-[2px] h-3 w-3 rounded-full bg-white shadow-sm transition-[left] ${on ? 'left-3' : 'left-[2px]'}`} />
+      </button>
       <button className="-mr-[6px] shrink-0 rounded-md px-[6px] py-px text-xs text-quiet hover:bg-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" onClick={() => void openProject(project.id, 'board')} aria-label={`Open ${name}'s board`}>Board →</button>
     </div>;
     return <section key={project.id} aria-label={name} className="flex flex-col">
       {index > 0 && <div className="mx-[10px] mt-[6px] h-px bg-[hsl(220_14%_94%)]" />}
       {header}
-      {group.fixes.map((fix, i) => projectBlock(fix, i, name))}
-      {group.agents.map(agent => agentRow(project.id, agent, group.limited.includes(agent.runtime)))}
-      {project.remote?.pressure && <div className="px-[10px] py-2 text-xs text-quiet">Waiting for the machine — {project.remote.pressure.reason}.</div>}
+      {!group.off && group.fixes.map((fix, i) => projectBlock(fix, i, name))}
+      {!group.off && group.agents.map(agent => agentRow(project.id, agent, group.limited.includes(agent.runtime)))}
+      {!group.off && project.remote?.pressure && <div className="px-[10px] py-2 text-xs text-quiet">Waiting for the machine — {project.remote.pressure.reason}.</div>}
     </section>;
   }
 
@@ -288,7 +308,7 @@ export function TrayPopover({ preview, mode = 'tray', previewFlow, previewUpdate
       {machine.map(machineBlock)}
       {groups.map(groupSection)}
       <div className="mx-[10px] my-[6px] h-px bg-hairline" />
-      {confirmQuit ? <div className="px-[10px] py-[6px]"><p className="mt-0 text-xs leading-[1.5] text-quiet">It tears down and exits — anything you type afterwards waits until someone starts it again on that computer.</p><div className="flex gap-2"><Button tone="solid" onClick={() => { if (!preview) void invoke('quit_app'); }}>Quit</Button><Button tone="quiet" onClick={() => setConfirmQuit(false)}>Cancel</Button></div></div> : <nav className="flex flex-col text-[13px]">{menu('machines', 'Open Machines')}{connectRow}<button className={`${rowButton} py-[6px]`} onClick={() => setConfirmQuit(true)}>Quit Flowviant Machines…</button></nav>}
+      {confirmQuit ? <div className="px-[10px] py-[6px]"><p className="mt-0 text-xs leading-[1.5] text-quiet">Stops every project on this computer and closes the app. Nothing is lost: opening Flowviant Machines again starts the projects that are on. To pause one project, use its switch instead.</p><div className="flex gap-2"><Button tone="solid" onClick={() => { if (!preview) void invoke('quit_app'); }}>Quit</Button><Button tone="quiet" onClick={() => setConfirmQuit(false)}>Cancel</Button></div></div> : <nav className="flex flex-col text-[13px]">{menu('machines', 'Open Machines')}{connectRow}<button className={`${rowButton} py-[6px]`} onClick={() => { if (!preview) void invoke('open_logs').catch(error => setNotice(String(error))); }}>Open logs</button><button className={`${rowButton} py-[6px]`} onClick={() => setConfirmQuit(true)}>Quit Flowviant Machines…</button></nav>}
     </>)}
     {notice && <div role="alert" className="px-[10px] py-2 text-xs text-amber-ink">{notice}</div>}
     {appVersion && <div className="flex items-center justify-between gap-2 px-[10px] pb-1 pt-2 text-[11px] text-quiet">

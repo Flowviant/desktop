@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { agentLine, deliveredLine, elapsed, fixesFor, headerState, machineFixes, machineLine, olderVersion, projectGroups, projectLine, projectTint } from './trayModel';
+import { agentLine, deliveredLine, elapsed, fixesFor, headerState, machineFixes, machineLine, olderVersion, projectGroups, projectLine, projectTint, WSL_STOPPED } from './trayModel';
 import type { Project, RemoteAgent, Snapshot } from '../model';
 import { stateWord } from './trayModel';
 
@@ -110,5 +110,27 @@ describe('tray model', () => {
     expect(projectTint('f5f7db90-27fa-4d27-bd35-b8befc989122').name).toBe('cyan');
     expect(projectTint('0b1c2d3e-aaaa-4bbb-8ccc-123456789abc').name).toBe('lilac');
     expect(projectTint('checkout-service').name).toBe('mint');
+  });
+
+  it('reports nothing for a project switched off, folds it, and sorts it last', () => {
+    const off = { ...other('off', { agents: [] }), running: false, enabled: false, stopReason: 'old reason' };
+    const snap = many(off, other('on', { agents: [{ ...agent, id: 'w', parked: false }] }));
+    expect(fixesFor(snap).filter(fix => fix.projectId === 'off')).toEqual([]);
+    const groups = projectGroups(snap, fixesFor(snap));
+    expect(groups.map(g => g.project.id)).toEqual(['on', 'off']);
+    expect(groups[1]).toMatchObject({ off: true, idle: false, inactive: false });
+  });
+
+  it('says why a project in a stopped WSL distro is not running, without a daemon reason', () => {
+    const stopped = { ...project, running: false, remote: null, wslStopped: true };
+    expect(fixesFor(snapshot(stopped)).find(fix => fix.kind === 'not-running')).toMatchObject({ reason: WSL_STOPPED });
+  });
+
+  it('counts only projects that are on, and a stopped WSL is not amber', () => {
+    const off = { ...other('off'), enabled: false };
+    expect(machineLine(many(other('a'), other('b'), off))).toBe('Serving 2 projects · v0.98.0');
+    expect(machineLine(many({ ...other('a'), enabled: false }, off))).toBe('All 2 projects off');
+    const wsl = { ...project, running: false, remote: null, wslStopped: true };
+    expect(headerState(snapshot(wsl), fixesFor(snapshot(wsl)))).toBe('dim');
   });
 });

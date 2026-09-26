@@ -35,3 +35,9 @@ fixtures.manyInactive = { schema: 1, version: '0.99.2', projects: [
   { ...project, holder: null, remote: remoteFor({ boxName: 'maya-laptop', role: 'inactive', servingBoxName: 'studio-pc', agents: [] }) },
   { ...marketing, remote: remoteFor({ boxName: 'maya-laptop', agents: [{ id: 'pricing', name: 'pricing-in-euros', status: 'working', runtime: 'claude', delivered: 1, total: 2, asks: false, parked: false, since: ago(21) }] }) },
 ], runtimes: [], cli: [] };
+
+fixtures.withOff = { schema: 1, version: '0.99.2', projects: [
+  project,
+  { ...docs, enabled: false, running: false },
+  { ...marketing, running: false, remote: null, wslStopped: true },
+], runtimes: [], cli: [] };

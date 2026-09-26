@@ -5,7 +5,10 @@ export type Fix =
   | { kind: 'displaced'; projectId: string; message: string }
   | { kind: 'behind'; projectId: string; latest: string; version: string }
   | { kind: 'inactive'; projectId: string; servingBoxName: string }
-  | { kind: 'not-running'; projectId: string; reason: string | null };
+  | { kind: 'not-running'; projectId: string; reason: string | null; wslStopped?: boolean };
+
+/** Said for a project whose WSL distro is not running (`wsl --shutdown`). */
+export const WSL_STOPPED = "WSL isn't running. This project starts again when WSL does — open a WSL terminal, or press Start.";
 
 export function olderVersion(version: string, latest: string): boolean {
   const parse = (value: string) => /^v?(\d+)\.(\d+)\.(\d+)(?:[-+][\w.-]+)?$/.exec(value.trim())?.slice(1, 4).map(Number);
@@ -21,6 +24,8 @@ export function olderVersion(version: string, latest: string): boolean {
 export function fixesFor(snapshot: Snapshot | null, displaced: MachineEvent[] = []): Fix[] {
   if (!snapshot) return [];
   return snapshot.projects.flatMap(project => {
+    // A project switched OFF is not a problem to report: it is stopped on purpose.
+    if (project.enabled === false) return [];
     const fixes: Fix[] = [];
     for (const runtime of project.runtimes) {
       if ((runtime.id === 'claude' || runtime.id === 'codex') && runtime.parkedByLimit && runtime.message) {
@@ -37,7 +42,7 @@ export function fixesFor(snapshot: Snapshot | null, displaced: MachineEvent[] = 
     if (remote?.role === 'inactive' && remote.servingBoxName && remote.boxName && remote.servingBoxName !== remote.boxName) {
       fixes.push({ kind: 'inactive', projectId: project.id, servingBoxName: remote.servingBoxName });
     }
-    if (project.running === false && remote?.role !== 'inactive') fixes.push({ kind: 'not-running', projectId: project.id, reason: project.stopReason ?? null });
+    if (project.running === false && remote?.role !== 'inactive') fixes.push({ kind: 'not-running', projectId: project.id, reason: project.stopReason ?? (project.wslStopped ? WSL_STOPPED : null), wslStopped: project.wslStopped === true });
     return fixes;
   });
 }
@@ -47,7 +52,8 @@ export function fixesFor(snapshot: Snapshot | null, displaced: MachineEvent[] = 
 const AMBER: Fix['kind'][] = ['limit', 'displaced', 'not-running'];
 
 export function headerState(snapshot: Snapshot | null, fixes: Fix[]): 'ok' | 'amber' | 'dim' {
-  if (fixes.some(fix => AMBER.includes(fix.kind))) return 'amber';
+  // WSL shut down on purpose is a state, not a fault: it does not turn the dot amber.
+  if (fixes.some(fix => AMBER.includes(fix.kind) && !(fix.kind === 'not-running' && fix.wslStopped))) return 'amber';
   if (snapshot?.projects.some(project => project.remote?.role === 'serving' || (!project.remote?.role && rowState(project) === 'serving'))) return 'ok';
   return 'dim';
 }
@@ -130,6 +136,8 @@ export type ProjectGroup = {
   inactive: boolean;
   /** Measured empty: the server said no agents and nothing needs fixing. */
   idle: boolean;
+  /** Switched off on the card: its daemon is stopped on purpose. */
+  off: boolean;
 };
 
 const PROJECT_FIXES: Fix['kind'][] = ['displaced', 'inactive', 'not-running'];
@@ -146,15 +154,18 @@ export function projectGroups(snapshot: Snapshot | null, fixes: Fix[]): ProjectG
       fixes: own,
       agents,
       limited: limited.filter(fix => fix.projectId === project.id).map(fix => fix.runtime),
-      inactive: project.remote?.role === 'inactive',
-      idle: Array.isArray(project.remote?.agents) && agents.length === 0 && own.length === 0 && !project.remote?.pressure,
+      inactive: project.enabled !== false && project.remote?.role === 'inactive',
+      idle: project.enabled !== false && Array.isArray(project.remote?.agents) && agents.length === 0 && own.length === 0 && !project.remote?.pressure,
+      off: project.enabled === false,
     };
   });
   const needsYou = (g: ProjectGroup) => g.agents.some(agent => agent.asks) || g.fixes.some(fix => fix.kind === 'displaced' || fix.kind === 'not-running');
+  const byOff = (g: ProjectGroup) => Number(g.off);
   const lastActive = (g: ProjectGroup) => Math.max(0, ...g.agents.map(agent => (agent.since ? Date.parse(agent.since) || 0 : 0)));
   return groups
     .map((group, index) => ({ group, index }))
-    .sort((a, b) => Number(needsYou(b.group)) - Number(needsYou(a.group))
+    .sort((a, b) => byOff(a.group) - byOff(b.group)
+      || Number(needsYou(b.group)) - Number(needsYou(a.group))
       || Number(b.group.agents.length > 0) - Number(a.group.agents.length > 0)
       || lastActive(b.group) - lastActive(a.group)
       || a.index - b.index)
@@ -163,8 +174,11 @@ export function projectGroups(snapshot: Snapshot | null, fixes: Fix[]): ProjectG
 
 /** The header's second line. One project keeps its own line (1c); several are counted (2a, 2c). */
 export function machineLine(snapshot: Snapshot | null): string | null {
-  const projects = snapshot?.projects ?? [];
-  if (projects.length === 0) return null;
+  const all = snapshot?.projects ?? [];
+  if (all.length === 0) return null;
+  // A project switched off is not counted: it is not asked to serve.
+  const projects = all.filter(project => project.enabled !== false);
+  if (projects.length === 0) return all.length === 1 ? 'Off' : `All ${all.length} projects off`;
   if (projects.length === 1) return projectLine(projects[0], snapshot?.version ?? null);
   const role = (project: Project) => project.remote?.role ?? (rowState(project) === 'serving' ? 'serving' : rowState(project) === 'inactive' ? 'inactive' : null);
   const serving = projects.filter(project => role(project) === 'serving').length;

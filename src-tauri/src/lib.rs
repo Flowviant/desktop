@@ -7,8 +7,13 @@ use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::UpdaterExt;
 
+fn on() -> bool { true }
+
+/// One project this app serves. `enabled` is the card's switch (absent in
+/// connections saved before 0.0.14: on). `name` is remembered so a project in a
+/// distro that is not running can still be listed without booting it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct Connection { id: String, distro: String, dir: String }
+struct Connection { id: String, distro: String, dir: String, #[serde(default = "on")] enabled: bool, #[serde(default)] name: Option<String> }
 
 #[derive(Default)]
 struct Controller { jobs: Mutex<HashMap<String, Arc<AtomicBool>>>, connections: Mutex<Vec<Connection>>, tray_anchor: Mutex<Option<TrayAnchor>>, tray_hidden_at: Mutex<Option<Instant>>, pending_update: Mutex<Option<(tauri_plugin_updater::Update, Vec<u8>)>>, failures: Mutex<HashMap<String, String>>, update_checked: Mutex<Option<Instant>> }
@@ -92,12 +97,62 @@ fn parse_wsl_distros(output: &[u8]) -> Vec<String> {
         .filter(|name| !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))).collect()
 }
 
-fn wsl_distros() -> Vec<String> {
-    let Ok(output) = quiet(Command::new("wsl.exe")).args(["--list", "--quiet"]).output() else { return Vec::new() };
-    if !output.status.success() { return Vec::new(); }
-    // Docker Desktop's distros are not places anyone keeps a checkout, and
-    // probing them on every refresh only costs time.
+
+/// Distros WSL has RUNNING right now. `--list --running` asks the WSL service
+/// and never boots a distro, which is the point: after `wsl --shutdown` this app
+/// must not start WSL again on its own (the owner, 2026-09-25).
+fn running_distros() -> HashSet<String> {
+    let Ok(output) = quiet(Command::new("wsl.exe")).args(["--list", "--running", "--quiet"]).output() else { return HashSet::new() };
     parse_wsl_distros(&output.stdout).into_iter().filter(|name| !name.starts_with("docker-desktop")).collect()
+}
+
+fn distro_running(distro: &str) -> bool { running_distros().contains(distro) }
+
+// ── The app's own log ────────────────────────────────────────────────────────
+// Every decision this app makes about a daemon — start, exit (code, reason, its
+// last words), standby, retry, WSL going away, updates, the on/off switch — one
+// line each, in %LOCALAPPDATA%\com.flowviant.desktop\logs\machines.log, rotated
+// at 1 MB to machines.log.1. The daemons keep their own logs in WSL
+// (`flowviant logs`); this is the half those cannot see.
+
+const LOG_MAX_BYTES: u64 = 1024 * 1024;
+
+fn log_line(app: &AppHandle, line: &str) {
+    let Ok(dir) = app.path().app_log_dir() else { return };
+    let _ = fs::create_dir_all(&dir);
+    let path = dir.join("machines.log");
+    if fs::metadata(&path).map(|m| m.len() > LOG_MAX_BYTES).unwrap_or(false) {
+        let _ = fs::rename(&path, dir.join("machines.log.1"));
+    }
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(&path) {
+        use std::io::Write;
+        let _ = writeln!(file, "{} {}", iso_utc(stamp), line.replace('\n', " / "));
+    }
+}
+
+/// Seconds since the epoch as `YYYY-MM-DDTHH:MM:SSZ` (no date crate for one line).
+fn iso_utc(secs: u64) -> String {
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    let (h, m, sec) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let mo = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(mo <= 2);
+    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{sec:02}Z")
+}
+
+#[tauri::command]
+fn open_logs(app: AppHandle) -> Result<(), String> {
+    let dir = app.path().app_log_dir().map_err(|e| e.to_string())?;
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    app.opener().open_path(dir.to_string_lossy().to_string(), None::<&str>).map_err(|e| e.to_string())
 }
 
 fn merge_cleanup_distros(saved: &[Connection], discovered: Vec<String>) -> Vec<String> {
@@ -229,6 +284,17 @@ const REFUSAL_RETRY: Duration = Duration::from_secs(5 * 60);
 /// How often a signalled-away project is checked for being free again.
 const STANDBY_CHECK: Duration = Duration::from_secs(15);
 
+/// How often a project whose WSL went away checks for it coming back.
+const WSL_CHECK: Duration = Duration::from_secs(30);
+
+/// Wait, without booting it, until `distro` runs again; false if cancelled.
+fn wait_for_distro(cancel: &AtomicBool, distro: &str) -> bool {
+    loop {
+        if distro_running(distro) { return true; }
+        if !nap(cancel, WSL_CHECK) { return false; }
+    }
+}
+
 /// Sleep in small steps; false when the supervisor was cancelled meanwhile.
 fn nap(cancel: &AtomicBool, total: Duration) -> bool {
     let until = Instant::now() + total;
@@ -242,6 +308,8 @@ fn nap(cancel: &AtomicBool, total: Duration) -> bool {
 /// Whether a daemon (any, e.g. one started in a terminal) is serving this
 /// project on this box right now, as `flowviant status --json` measures it.
 fn daemon_running(distro: &str, id: &str) -> Option<bool> {
+    // Asking would boot a stopped distro; a stopped distro runs no daemon.
+    if !distro_running(distro) { return Some(false); }
     let binary = binary_path(distro).ok()?;
     let raw = run_wsl(distro, None, &[&binary, "status", "--json"]).ok()?;
     let value: Value = serde_json::from_str(&raw).ok()?;
@@ -262,8 +330,19 @@ fn daemon_running(distro: &str, id: &str) -> Option<bool> {
 fn supervise(app: AppHandle, connection: Connection, cancel: Arc<AtomicBool>) {
     let mut backoff = 2;
     let mut told = false;
+    let mut first = true;
+    let who = connection.name.clone().unwrap_or_else(|| connection.id.clone());
     loop {
         if cancel.load(Ordering::SeqCst) { break; }
+        // The FIRST start may boot WSL: it is a launch, a Start or a switch
+        // turned on — a person's intent. A RESTART never does: if the distro is
+        // down (`wsl --shutdown`), wait for someone to bring it back.
+        if !first && !distro_running(&connection.distro) {
+            log_line(&app, &format!("{who}: {} is not running; waiting for it (not starting WSL)", connection.distro));
+            if !wait_for_distro(&cancel, &connection.distro) { break; }
+            log_line(&app, &format!("{who}: {} is running again", connection.distro));
+        }
+        first = false;
         // Something else already serves it here (a `flowviant` in a terminal):
         // starting now would take it over, so stand by until it is gone.
         if daemon_running(&connection.distro, &connection.id) == Some(true) {
@@ -281,6 +360,7 @@ fn supervise(app: AppHandle, connection: Connection, cancel: Arc<AtomicBool>) {
             break;
         };
         let started = Instant::now();
+        log_line(&app, &format!("{who}: started the daemon in {}:{}", connection.distro, connection.dir));
         let stderr = child.stderr.take().map(|err| thread::spawn(move || {
             let mut tail: Vec<String> = Vec::new();
             for line in BufReader::new(err).lines().map_while(Result::ok) {
@@ -312,7 +392,23 @@ fn supervise(app: AppHandle, connection: Connection, cancel: Arc<AtomicBool>) {
         let status = child.wait();
         let tail = stderr.and_then(|handle| handle.join().ok()).unwrap_or_default();
         let _ = app.emit("status-changed", ());
+        let code = status.as_ref().ok().and_then(|s| s.code());
+        log_line(&app, &format!("{who}: daemon exited (code {}, after {}s, served: {served}, stop: {}{}){}",
+            code.map_or("none".into(), |c| c.to_string()), started.elapsed().as_secs(),
+            stop_reason.as_deref().unwrap_or(if clean_stop { "clean" } else { "none" }),
+            if displaced { ", displaced" } else { "" },
+            tail.last().map(|l| format!(" — {l}")).unwrap_or_default()));
         if cancel.load(Ordering::SeqCst) || displaced { break; }
+        // WSL WENT AWAY (`wsl --shutdown`, or Windows stopping it): a person's
+        // act, not a daemon failure — no notification, no restart that would
+        // boot it again. The card says so; the project resumes when WSL does.
+        if !distro_running(&connection.distro) {
+            if let Ok(mut failures) = app.state::<Controller>().failures.lock() {
+                failures.insert(connection.id.clone(), "WSL isn't running. This project starts again when WSL does — open a WSL terminal, or press Start.".into());
+            }
+            let _ = app.emit("status-changed", ());
+            continue;
+        }
         if clean_stop {
             // The server ended this box's part (removed from the project, its
             // credential revoked): final. Anything else that stopped it cleanly
@@ -322,6 +418,7 @@ fn supervise(app: AppHandle, connection: Connection, cancel: Arc<AtomicBool>) {
             // the app open (Death Note - Roblox, 2026-09-25). Now: wait until
             // nothing else is serving it here, then serve it again.
             if matches!(stop_reason.as_deref(), Some("removed") | Some("credential-revoked")) { break; }
+            log_line(&app, &format!("{who}: stopped by a signal; standing by until nothing else serves it"));
             let mut free = false;
             while nap(&cancel, STANDBY_CHECK) {
                 if daemon_running(&connection.distro, &connection.id) != Some(true) { free = true; break; }
@@ -337,6 +434,7 @@ fn supervise(app: AppHandle, connection: Connection, cancel: Arc<AtomicBool>) {
             // person's (a first commit), and after it the project should come
             // back by itself.
             fail_project(&app, &connection.id, &reason, &mut told);
+            log_line(&app, &format!("{who}: start refused; trying again in {}s", REFUSAL_RETRY.as_secs()));
             if !nap(&cancel, REFUSAL_RETRY) { break; }
             continue;
         }
@@ -380,9 +478,12 @@ fn connection(app: &AppHandle, id: &str) -> Result<Connection, String> {
 
 #[tauri::command(async)]
 fn status(app: AppHandle, remote: Option<bool>) -> Result<Value, String> {
-    let known = app.state::<Controller>().connections.lock().map_err(|e| e.to_string())?.clone();
-    let mut distros: HashSet<_> = known.iter().map(|c| c.distro.clone()).collect();
-    distros.extend(wsl_distros());
+    // ONLY DISTROS ALREADY RUNNING. Every `wsl.exe -d <distro>` boots that
+    // distro, and this runs every 30 s: it is what started WSL again after the
+    // owner's `wsl --shutdown`. A project in a stopped distro is listed from the
+    // saved connection below instead, marked `wslStopped`.
+    let running = running_distros();
+    let distros: HashSet<String> = running.clone();
     let mut projects = Vec::new();
     let mut runtimes = Vec::new();
     let mut cli = Vec::new();
@@ -412,13 +513,28 @@ fn status(app: AppHandle, remote: Option<bool>) -> Result<Value, String> {
                         }
                         if let (Some(id), Some(dir)) = (row["id"].as_str(), row["dir"].as_str()) {
                             if let Ok(mut connections) = app.state::<Controller>().connections.lock() {
-                                if !connections.iter().any(|c| c.id == id) { connections.push(Connection { id: id.into(), distro: distro.clone(), dir: dir.into() }); }
+                                if let Some(existing) = connections.iter_mut().find(|c| c.id == id) {
+                                    if let Some(name) = row["name"].as_str() { existing.name = Some(name.to_string()); }
+                                }
+                                if !connections.iter().any(|c| c.id == id) { connections.push(Connection { id: id.into(), distro: distro.clone(), dir: dir.into(), enabled: true, name: row["name"].as_str().map(str::to_string) }); }
                             }
                         }
                         projects.push(row.clone());
                     }
                 }
             }
+        }
+    }
+    let saved = app.state::<Controller>().connections.lock().map_err(|e| e.to_string())?.clone();
+    for c in saved.iter().filter(|c| !running.contains(&c.distro)) {
+        projects.push(json!({ "id": c.id, "name": c.name, "dir": c.dir, "distro": c.distro, "running": false, "holder": null,
+            "lastPoll": null, "logFile": "", "runtimes": [], "wslStopped": true }));
+    }
+    for row in projects.iter_mut() {
+        let id = row["id"].as_str().map(str::to_string);
+        if let Some(c) = id.and_then(|id| saved.iter().find(|c| c.id == id)) {
+            row["enabled"] = json!(c.enabled);
+            if !c.enabled { row.as_object_mut().map(|o| o.remove("stopReason")); }
         }
     }
     let _ = save_connections(&app);
@@ -493,7 +609,7 @@ fn connect(app: AppHandle, folder: String) -> Result<(), String> {
                     if event["event"] == "bound" {
                         completed = true;
                         if let Some(id) = event["projectId"].as_str() {
-                            let row = Connection { id: id.into(), distro: distro.clone(), dir: dir.clone() };
+                            let row = Connection { id: id.into(), distro: distro.clone(), dir: dir.clone(), enabled: true, name: event["name"].as_str().map(str::to_string) };
                             if let Ok(mut rows) = app.state::<Controller>().connections.lock() {
                                 rows.retain(|existing| existing.id != id);
                                 rows.push(row.clone());
@@ -508,6 +624,7 @@ fn connect(app: AppHandle, folder: String) -> Result<(), String> {
         }
         let status = child.wait();
         let tail = stderr.and_then(|handle| handle.join().ok()).unwrap_or_default();
+        log_line(&app, &format!("connect {distro}:{dir}: login ended (completed: {completed}){}", tail.last().map(|l| format!(" — {l}")).unwrap_or_default()));
         if !completed {
             let reason = tail.last().cloned()
                 .or_else(|| status.ok().and_then(|s| s.code()).filter(|code| *code != 0).map(|code| format!("flowviant exited with code {code}")));
@@ -529,6 +646,7 @@ fn project_action(app: AppHandle, id: String, action: String) -> Result<(), Stri
     match action.as_str() {
         "start" | "restart" => {
             clear_failure(&app, &id);
+            log_line(&app, &format!("{}: {action} pressed", row.name.clone().unwrap_or_else(|| id.clone())));
             // A person's Start replaces a supervisor that is waiting out a
             // refusal or standing by, so the press acts now.
             if action == "start" {
@@ -546,6 +664,34 @@ fn project_action(app: AppHandle, id: String, action: String) -> Result<(), Stri
         }
         "stop" => (),
         _ => return Err("Unknown action".into()),
+    }
+    let _ = app.emit("status-changed", ());
+    Ok(())
+}
+
+/// The card's per-project switch. Off stops the daemon and keeps it stopped —
+/// no restart, not started at launch; on starts it and keeps it running.
+#[tauri::command(async)]
+fn set_enabled(app: AppHandle, id: String, enabled: bool) -> Result<(), String> {
+    let row = {
+        let controller = app.state::<Controller>();
+        let mut rows = controller.connections.lock().map_err(|e| e.to_string())?;
+        let row = rows.iter_mut().find(|c| c.id == id).ok_or("Project is not connected on this box")?;
+        row.enabled = enabled;
+        row.clone()
+    };
+    save_connections(&app)?;
+    let who = row.name.clone().unwrap_or_else(|| row.id.clone());
+    log_line(&app, &format!("{who}: switched {}", if enabled { "on" } else { "off" }));
+    if let Some(cancel) = app.state::<Controller>().jobs.lock().map_err(|e| e.to_string())?.remove(&id) { cancel.store(true, Ordering::SeqCst); }
+    clear_failure(&app, &id);
+    if enabled {
+        start_one(&app, row)?;
+    } else if distro_running(&row.distro) {
+        // Stopped through the daemon's own clean path; a stopped distro has
+        // nothing to stop and is left stopped.
+        let binary = binary_path(&row.distro)?;
+        let _ = run_wsl(&row.distro, None, &[&binary, "stop", "--project", &id]);
     }
     let _ = app.emit("status-changed", ());
     Ok(())
@@ -680,6 +826,7 @@ async fn stage_update(app: &AppHandle) -> Result<(), String> {
     let Some(update) = app.updater().map_err(|e| e.to_string())?.check().await.map_err(|e| e.to_string())? else { return Ok(()) };
     let bytes = update.download(|_, _| {}, || {}).await.map_err(|e| e.to_string())?;
     let version = update.version.clone();
+    log_line(app, &format!("update {version} downloaded; installs when nothing is running here"));
     *app.state::<Controller>().pending_update.lock().map_err(|e| e.to_string())? = Some((update, bytes));
     let _ = app.emit("update-ready", json!({ "version": version }));
     Ok(())
@@ -689,7 +836,9 @@ async fn stage_update(app: &AppHandle) -> Result<(), String> {
 /// agent. A project not running on this computer has nothing here to cut off.
 fn machine_idle(app: &AppHandle) -> bool {
     let rows = app.state::<Controller>().connections.lock().map(|rows| rows.clone()).unwrap_or_default();
-    let distros: HashSet<String> = rows.iter().map(|row| row.distro.clone()).collect();
+    // A stopped distro runs nothing, and asking it would boot it.
+    let running = running_distros();
+    let distros: HashSet<String> = rows.iter().map(|row| row.distro.clone()).filter(|d| running.contains(d)).collect();
     for distro in distros {
         let Ok(binary) = binary_path(&distro) else { return false };
         let Ok(raw) = run_wsl(&distro, None, &[&binary, "status", "--json", "--remote"]) else { return false };
@@ -712,6 +861,7 @@ fn machine_idle(app: &AppHandle) -> bool {
 fn install_pending(app: &AppHandle) -> Result<(), String> {
     let staged = app.state::<Controller>().pending_update.lock().map_err(|e| e.to_string())?.take();
     let Some((update, bytes)) = staged else { return Err("No update is ready".into()) };
+    log_line(app, &format!("installing update {}: stopping the daemons first", update.version));
     stop_daemons(app);
     // On Windows this starts the installer and exits the process.
     update.install(bytes).map_err(|e| e.to_string())?;
@@ -801,7 +951,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![status, connect, open_connect_page, project_action, open_project, set_tray_state, fit_tray, hide_tray, show_main, quit_app, pending_update, install_update, check_update, app_version])
+        .invoke_handler(tauri::generate_handler![status, connect, open_connect_page, project_action, open_project, set_tray_state, fit_tray, hide_tray, show_main, quit_app, pending_update, install_update, check_update, app_version, set_enabled, open_logs])
         .setup(|app| {
             let handle = app.handle();
             if let Ok(path) = config_path(handle) {
@@ -866,7 +1016,9 @@ pub fn run() {
                 // by until it ends, then serves it (see `supervise`).
                 let _ = status(startup.clone(), None);
                 let rows = startup.state::<Controller>().connections.lock().unwrap().clone();
-                for row in rows { let _ = start_one(&startup, row); }
+                log_line(&startup, &format!("Flowviant Machines {} started{}", startup.package_info().version,
+                    if std::env::args().any(|arg| arg == AUTOSTART_ARG) { " at sign-in" } else { "" }));
+                for row in rows.into_iter().filter(|row| row.enabled) { let _ = start_one(&startup, row); }
                 let _ = startup.emit("status-changed", ());
             });
             Ok(())
@@ -877,7 +1029,14 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{connect_url, merge_cleanup_distros, parse_wsl_distros, readable, valid_code, Connection};
+    use super::{connect_url, iso_utc, merge_cleanup_distros, parse_wsl_distros, readable, valid_code, Connection};
+
+    #[test]
+    fn log_lines_are_stamped_in_utc() {
+        assert_eq!(iso_utc(0), "1970-01-01T00:00:00Z");
+        assert_eq!(iso_utc(1_790_391_031), "2026-09-26T02:50:31Z");
+        assert_eq!(iso_utc(951_782_400), "2000-02-29T00:00:00Z");
+    }
 
     #[test]
     fn stderr_lines_read_as_words() {
@@ -897,9 +1056,9 @@ mod tests {
     #[test]
     fn cleanup_deduplicates_saved_and_discovered_distros() {
         let saved = vec![
-            Connection { id: "first".into(), distro: "Ubuntu".into(), dir: "/one".into() },
-            Connection { id: "second".into(), distro: "Ubuntu".into(), dir: "/two".into() },
-            Connection { id: "third".into(), distro: "Debian".into(), dir: "/three".into() },
+            Connection { id: "first".into(), distro: "Ubuntu".into(), dir: "/one".into(), enabled: true, name: None },
+            Connection { id: "second".into(), distro: "Ubuntu".into(), dir: "/two".into(), enabled: true, name: None },
+            Connection { id: "third".into(), distro: "Debian".into(), dir: "/three".into(), enabled: true, name: None },
         ];
         assert_eq!(merge_cleanup_distros(&saved, vec!["Debian".into(), "Fedora".into(), "Fedora".into()]),
             vec!["Ubuntu", "Debian", "Fedora"]);
