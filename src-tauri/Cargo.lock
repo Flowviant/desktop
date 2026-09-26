@@ -1086,7 +1086,7 @@ dependencies = [
 
 [[package]]
 name = "flowviant-desktop"
-version = "0.0.12"
+version = "0.0.13"
 dependencies = [
  "serde",
  "serde_json",
