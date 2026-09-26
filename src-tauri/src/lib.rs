@@ -11,7 +11,7 @@ use tauri_plugin_updater::UpdaterExt;
 struct Connection { id: String, distro: String, dir: String }
 
 #[derive(Default)]
-struct Controller { jobs: Mutex<HashMap<String, Arc<AtomicBool>>>, connections: Mutex<Vec<Connection>>, tray_anchor: Mutex<Option<TrayAnchor>>, tray_hidden_at: Mutex<Option<Instant>>, pending_update: Mutex<Option<(tauri_plugin_updater::Update, Vec<u8>)>>, failures: Mutex<HashMap<String, String>> }
+struct Controller { jobs: Mutex<HashMap<String, Arc<AtomicBool>>>, connections: Mutex<Vec<Connection>>, tray_anchor: Mutex<Option<TrayAnchor>>, tray_hidden_at: Mutex<Option<Instant>>, pending_update: Mutex<Option<(tauri_plugin_updater::Update, Vec<u8>)>>, failures: Mutex<HashMap<String, String>>, update_checked: Mutex<Option<Instant>> }
 
 #[derive(Clone, Copy)]
 struct TrayAnchor { right: f64, bottom: f64, left: f64, top: f64, work_right: f64, work_bottom: f64, scale: f64 }
@@ -592,8 +592,26 @@ fn quit(app: &AppHandle) {
 // The installer runs passively with /UPDATE (so the uninstall-cleanup hook skips)
 // and relaunches the app with its own arguments, so a tray start stays in the tray.
 
-const UPDATE_CHECK_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
-const UPDATE_TICK: Duration = Duration::from_secs(15 * 60);
+// Hourly, and whenever the card is opened if the last check is older than
+// UPDATE_CHECK_ON_OPEN. It was six hours at 0.0.9, so a release published just
+// after an app started reached it only the next morning.
+const UPDATE_CHECK_EVERY: Duration = Duration::from_secs(60 * 60);
+const UPDATE_CHECK_ON_OPEN: Duration = Duration::from_secs(10 * 60);
+const UPDATE_TICK: Duration = Duration::from_secs(10 * 60);
+
+/// Check now unless a check ran within `fresh`; returns the staged version.
+async fn check_now(app: &AppHandle, fresh: Duration) -> Result<Option<String>, String> {
+    let staged = || app.state::<Controller>().pending_update.lock().ok().and_then(|p| p.as_ref().map(|(u, _)| u.version.clone()));
+    if let Some(version) = staged() { return Ok(Some(version)); }
+    {
+        let controller = app.state::<Controller>();
+        let mut checked = controller.update_checked.lock().map_err(|e| e.to_string())?;
+        if checked.is_some_and(|at| at.elapsed() < fresh) { return Ok(None); }
+        *checked = Some(Instant::now());
+    }
+    stage_update(app).await?;
+    Ok(staged())
+}
 
 async fn stage_update(app: &AppHandle) -> Result<(), String> {
     let Some(update) = app.updater().map_err(|e| e.to_string())?.check().await.map_err(|e| e.to_string())? else { return Ok(()) };
@@ -604,7 +622,8 @@ async fn stage_update(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// True only when every project this computer serves reports no working agent.
+/// True only when no project whose daemon RUNS HERE and serves has a working
+/// agent. A project not running on this computer has nothing here to cut off.
 fn machine_idle(app: &AppHandle) -> bool {
     let rows = app.state::<Controller>().connections.lock().map(|rows| rows.clone()).unwrap_or_default();
     let distros: HashSet<String> = rows.iter().map(|row| row.distro.clone()).collect();
@@ -614,6 +633,7 @@ fn machine_idle(app: &AppHandle) -> bool {
         let Ok(value) = serde_json::from_str::<Value>(&raw) else { return false };
         for project in value["projects"].as_array().into_iter().flatten() {
             if !rows.iter().any(|row| project["id"] == json!(row.id)) { continue; }
+            if project["running"] != json!(true) { continue; }
             match project["remote"]["role"].as_str() {
                 Some("inactive") => continue,
                 Some("serving") => (),
@@ -639,18 +659,25 @@ fn update_loop(app: AppHandle) {
     if cfg!(debug_assertions) { return; }
     thread::spawn(move || {
         thread::sleep(Duration::from_secs(60));
-        let mut checked: Option<Instant> = None;
         loop {
             let staged = || app.state::<Controller>().pending_update.lock().map(|p| p.is_some()).unwrap_or(false);
-            if !staged() && checked.map_or(true, |at| at.elapsed() >= UPDATE_CHECK_EVERY) {
-                checked = Some(Instant::now());
-                let _ = tauri::async_runtime::block_on(stage_update(&app));
-            }
+            if !staged() { let _ = tauri::async_runtime::block_on(check_now(&app, UPDATE_CHECK_EVERY)); }
             if staged() && machine_idle(&app) { let _ = install_pending(&app); }
             thread::sleep(UPDATE_TICK);
         }
     });
 }
+
+/// The card's version line and its "Check for updates". `force` is the press;
+/// opening the card passes false and re-checks only after UPDATE_CHECK_ON_OPEN.
+#[tauri::command]
+async fn check_update(app: AppHandle, force: Option<bool>) -> Result<Option<String>, String> {
+    if cfg!(debug_assertions) { return Ok(None); }
+    check_now(&app, if force == Some(true) { Duration::ZERO } else { UPDATE_CHECK_ON_OPEN }).await
+}
+
+#[tauri::command]
+fn app_version(app: AppHandle) -> String { app.package_info().version.to_string() }
 
 #[tauri::command]
 fn pending_update(app: AppHandle) -> Option<String> {
@@ -711,7 +738,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![status, connect, open_connect_page, project_action, open_project, set_tray_state, fit_tray, hide_tray, show_main, quit_app, pending_update, install_update])
+        .invoke_handler(tauri::generate_handler![status, connect, open_connect_page, project_action, open_project, set_tray_state, fit_tray, hide_tray, show_main, quit_app, pending_update, install_update, check_update, app_version])
         .setup(|app| {
             let handle = app.handle();
             if let Ok(path) = config_path(handle) {

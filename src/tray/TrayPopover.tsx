@@ -48,6 +48,8 @@ export function TrayPopover({ preview, mode = 'tray', previewFlow, previewUpdate
   const [tray, setTray] = useState<TrayState>('idle');
   const [update, setUpdate] = useState<string | null>(previewUpdate ?? null);
   const [confirmUpdate, setConfirmUpdate] = useState(false);
+  const [appVersion, setAppVersion] = useState<string | null>(preview ? '0.0.11' : null);
+  const [checking, setChecking] = useState<'idle' | 'checking' | 'current' | 'failed'>('idle');
   const [displaced, setDisplaced] = useState<MachineEvent[]>([]);
   const [confirmQuit, setConfirmQuit] = useState(false);
   const [expanded, setExpanded] = useState<'machines' | 'board' | null>(null);
@@ -91,6 +93,7 @@ export function TrayPopover({ preview, mode = 'tray', previewFlow, previewUpdate
   useEffect(() => {
     if (preview) return;
     let active = true;
+    void invoke<string>('app_version').then(version => { if (active) setAppVersion(version); }).catch(() => {});
     void invoke<string | null>('pending_update').then(version => { if (active && version) setUpdate(version); }).catch(() => {});
     const off = listen<{ version: string }>('update-ready', event => { if (active) setUpdate(event.payload.version); });
     return () => { active = false; void off.then(stop => stop()); };
@@ -133,6 +136,20 @@ export function TrayPopover({ preview, mode = 'tray', previewFlow, previewUpdate
     void getCurrentWindow().isVisible().then(shown => { if (active && shown) { visibleRef.current = true; setVisible(true); void refresh(); } });
     return () => { active = false; void offVisible.then(off => off()); void offMachine.then(off => off()); void offStatus.then(off => off()); };
   }, [preview, windowed, refresh]);
+
+  useEffect(() => {
+    if (!visible || preview) return;
+    void invoke<string | null>('check_update', { force: false }).then(version => { if (version) setUpdate(version); }).catch(() => {});
+  }, [visible, preview]);
+
+  async function checkNow() {
+    if (preview) return;
+    setChecking('checking');
+    try {
+      const version = await invoke<string | null>('check_update', { force: true });
+      if (version) { setUpdate(version); setChecking('idle'); } else setChecking('current');
+    } catch { setChecking('failed'); }
+  }
 
   useEffect(() => {
     if (!visible || preview) return;
@@ -274,6 +291,12 @@ export function TrayPopover({ preview, mode = 'tray', previewFlow, previewUpdate
       {confirmQuit ? <div className="px-[10px] py-[6px]"><p className="mt-0 text-xs leading-[1.5] text-quiet">It tears down and exits — anything you type afterwards waits until someone starts it again on that computer.</p><div className="flex gap-2"><Button tone="solid" onClick={() => { if (!preview) void invoke('quit_app'); }}>Quit</Button><Button tone="quiet" onClick={() => setConfirmQuit(false)}>Cancel</Button></div></div> : <nav className="flex flex-col text-[13px]">{menu('machines', 'Open Machines')}{connectRow}<button className={`${rowButton} py-[6px]`} onClick={() => setConfirmQuit(true)}>Quit Flowviant Machines…</button></nav>}
     </>)}
     {notice && <div role="alert" className="px-[10px] py-2 text-xs text-amber-ink">{notice}</div>}
+    {appVersion && <div className="flex items-center justify-between gap-2 px-[10px] pb-1 pt-2 text-[11px] text-quiet">
+      <span>Flowviant Machines {appVersion}</span>
+      {!update && <button className="rounded px-1 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-60" disabled={checking === 'checking'} onClick={() => void checkNow()}>
+        {checking === 'checking' ? 'Checking…' : checking === 'current' ? 'Up to date' : checking === 'failed' ? 'Could not check — try again' : 'Check for updates'}
+      </button>}
+    </div>}
   </div>;
   if (windowed) return <div ref={card} className="min-h-screen bg-white p-[6px] text-ink">{body}</div>;
   // The rounded card CLIPS and an inner box scrolls: a scrollbar drawn on the
