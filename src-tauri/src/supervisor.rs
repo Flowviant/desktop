@@ -3,10 +3,14 @@
 //! all on the way out.
 //!
 //! Split out of `lib.rs` (2026-09-26, SOLID F161). The lifecycle rules —
-//! the refusal window, the quiet retry, standing by for a terminal
-//! `flowviant`, never booting a distro that was shut down — change together
-//! and apart from the window, the updater and the tray; `lib.rs` only starts
-//! the supervisors at launch.
+//! the refusal window, the quiet retry, the backoff, standing by for a
+//! terminal `flowviant`, never booting a distro that was shut down, which
+//! stops are final — change together and apart from the window, the updater
+//! and the tray; `lib.rs` only starts the supervisors at launch. The rules
+//! themselves are pure decisions in `supervisor_rules` (std-only, tested with
+//! plain rustc); this file is the I/O that asks them. It is also the one
+//! holder of a supervisor's state: the job map (`start_one`, `cancel`,
+//! `stop_daemons`) and the failure map (`failure`, `clear_failure`).
 
 use serde_json::{json, Value};
 use std::{io::{BufRead, BufReader}, process::Stdio, sync::{atomic::{AtomicBool, Ordering}, Arc}, thread, time::{Duration, Instant}};
@@ -17,6 +21,7 @@ use crate::bundled_daemon::ensure_binary;
 use crate::connections::Connection;
 use crate::daemon_output::{readable, stderr_tail};
 use crate::machine_log::log_line;
+use crate::supervisor_rules::{self, Next, Run, Supervision};
 use crate::tray::tray_icon;
 use crate::wsl::{binary_path, distro_running, run_wsl, wsl};
 use crate::{notifications, Controller};
@@ -32,15 +37,6 @@ fn announce(app: &AppHandle, event: &Value) {
     } else if kind == "serving" { tray_icon(app, "serving"); }
 }
 
-/// How long a start may run before its exit counts as a stop rather than a
-/// refusal. A daemon that will not serve (another project is bound to this repo,
-/// the folder is not the one that was connected, a newer daemon holds the lock)
-/// says so and exits within seconds.
-const REFUSAL_WINDOW: Duration = Duration::from_secs(60);
-/// How often a refused start is quietly tried again (the cause is usually
-/// fixed by a person — a first commit, a folder put back — and nobody should
-/// have to press Start after fixing it).
-const REFUSAL_RETRY: Duration = Duration::from_secs(5 * 60);
 /// How often a signalled-away project is checked for being free again.
 const STANDBY_CHECK: Duration = Duration::from_secs(15);
 
@@ -86,10 +82,10 @@ fn daemon_running(distro: &str, id: &str) -> Option<bool> {
 /// Now its last stderr line is the reason; a start that ends inside
 /// REFUSAL_WINDOW without ever serving is not retried (said once, in its words;
 /// the card offers Start); and a daemon that did run is restarted with backoff
-/// but announced only once until it serves again.
+/// but announced only once until it serves again. Every such decision is
+/// `supervisor_rules`'.
 fn supervise(app: AppHandle, connection: Connection, cancel: Arc<AtomicBool>) {
-    let mut backoff = 2;
-    let mut told = false;
+    let mut state = Supervision::default();
     let mut first = true;
     let who = connection.name.clone().unwrap_or_else(|| connection.id.clone());
     loop {
@@ -97,7 +93,7 @@ fn supervise(app: AppHandle, connection: Connection, cancel: Arc<AtomicBool>) {
         // The FIRST start may boot WSL: it is a launch, a Start or a switch
         // turned on — a person's intent. A RESTART never does: if the distro is
         // down (`wsl --shutdown`), wait for someone to bring it back.
-        if !first && !distro_running(&connection.distro) {
+        if supervisor_rules::waits_for_distro(first, || distro_running(&connection.distro)) {
             log_line(&app, &format!("{who}: {} is not running; waiting for it (not starting WSL)", connection.distro));
             if !wait_for_distro(&cancel, &connection.distro) { break; }
             log_line(&app, &format!("{who}: {} is running again", connection.distro));
@@ -105,35 +101,26 @@ fn supervise(app: AppHandle, connection: Connection, cancel: Arc<AtomicBool>) {
         first = false;
         // Something else already serves it here (a `flowviant` in a terminal):
         // starting now would take it over, so stand by until it is gone.
-        if daemon_running(&connection.distro, &connection.id) == Some(true) {
-            let mut free = false;
-            while nap(&cancel, STANDBY_CHECK) {
-                if daemon_running(&connection.distro, &connection.id) != Some(true) { free = true; break; }
-            }
-            if !free { break; }
+        if supervisor_rules::serving_elsewhere(daemon_running(&connection.distro, &connection.id)) {
+            if !stand_by(&cancel, &connection) { break; }
         }
         let binary = match binary_path(&connection.distro) { Ok(path) => path, Err(_) => break };
         let result = wsl(&connection.distro, Some(&connection.dir), &[&binary, "--project", &connection.id, "--dir", &connection.dir, "--json-events"])
             .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn();
         let Ok(mut child) = result else {
-            fail_project(&app, &connection.id, "Could not start wsl.exe", &mut told);
+            fail_project(&app, &connection.id, "Could not start wsl.exe", state.announce_once());
             break;
         };
         let started = Instant::now();
         log_line(&app, &format!("{who}: started the daemon in {}:{}", connection.distro, connection.dir));
         let stderr = child.stderr.take().map(stderr_tail);
-        let mut displaced = false;
-        let mut clean_stop = false;
-        let mut stop_reason: Option<String> = None;
-        let mut served = false;
+        let mut run = Run::default();
         if let Some(stdout) = child.stdout.take() {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 if let Ok(mut event) = serde_json::from_str::<Value>(&readable(&line)) {
-                    match event.get("event").and_then(Value::as_str) {
-                        Some("displaced") => displaced = true,
-                        Some("stopped") => { clean_stop = true; stop_reason = event["reason"].as_str().map(str::to_string); }
-                        Some("serving") => { served = true; told = false; backoff = 2; clear_failure(&app, &connection.id); }
-                        _ => (),
+                    if run.observe(event.get("event").and_then(Value::as_str), event["reason"].as_str()) {
+                        state.served();
+                        clear_failure(&app, &connection.id);
                     }
                     event["projectId"] = json!(connection.id);
                     announce(&app, &event);
@@ -144,71 +131,92 @@ fn supervise(app: AppHandle, connection: Connection, cancel: Arc<AtomicBool>) {
         let tail = stderr.and_then(|handle| handle.join().ok()).unwrap_or_default();
         let _ = app.emit("status-changed", ());
         let code = status.as_ref().ok().and_then(|s| s.code());
-        log_line(&app, &format!("{who}: daemon exited (code {}, after {}s, served: {served}, stop: {}{}){}",
-            code.map_or("none".into(), |c| c.to_string()), started.elapsed().as_secs(),
-            stop_reason.as_deref().unwrap_or(if clean_stop { "clean" } else { "none" }),
-            if displaced { ", displaced" } else { "" },
+        log_line(&app, &format!("{who}: daemon exited (code {}, after {}s, served: {}, stop: {}{}){}",
+            code.map_or("none".into(), |c| c.to_string()), started.elapsed().as_secs(), run.served,
+            run.stop_reason.as_deref().unwrap_or(if run.clean_stop { "clean" } else { "none" }),
+            if run.displaced { ", displaced" } else { "" },
             tail.last().map(|l| format!(" — {l}")).unwrap_or_default()));
-        if cancel.load(Ordering::SeqCst) || displaced { break; }
-        // WSL WENT AWAY (`wsl --shutdown`, or Windows stopping it): a person's
-        // act, not a daemon failure — no notification, no restart that would
-        // boot it again. The card says so; the project resumes when WSL does.
-        if !distro_running(&connection.distro) {
-            if let Ok(mut failures) = app.state::<Controller>().failures.lock() {
-                failures.insert(connection.id.clone(), "WSL isn't running. This project starts again when WSL does — open a WSL terminal, or press Start.".into());
+        match supervisor_rules::after_exit(cancel.load(Ordering::SeqCst), &run, || distro_running(&connection.distro), || started.elapsed()) {
+            Next::Quit => break,
+            // WSL WENT AWAY (`wsl --shutdown`, or Windows stopping it): a person's
+            // act, not a daemon failure — no notification, no restart that would
+            // boot it again. The card says so; the project resumes when WSL does.
+            Next::WslStopped => {
+                record_failure(&app, &connection.id, supervisor_rules::WSL_STOPPED);
+                let _ = app.emit("status-changed", ());
+                continue;
             }
-            let _ = app.emit("status-changed", ());
-            continue;
-        }
-        if clean_stop {
-            // The server ended this box's part (removed from the project, its
-            // credential revoked): final. Anything else that stopped it cleanly
-            // was a SIGNAL — `flowviant stop`, or a `flowviant` started in a
-            // terminal in the same repo, which takes over. It used to be final
-            // too, so when that terminal closed the project sat offline with
-            // the app open (Death Note - Roblox, 2026-09-25). Now: wait until
-            // nothing else is serving it here, then serve it again.
-            if matches!(stop_reason.as_deref(), Some("removed") | Some("credential-revoked")) { break; }
-            log_line(&app, &format!("{who}: stopped by a signal; standing by until nothing else serves it"));
-            let mut free = false;
-            while nap(&cancel, STANDBY_CHECK) {
-                if daemon_running(&connection.distro, &connection.id) != Some(true) { free = true; break; }
+            // Removed from the project or its credential revoked was `Quit`.
+            // Anything else that stopped it cleanly was a SIGNAL — `flowviant
+            // stop`, or a `flowviant` started in a terminal in the same repo,
+            // which takes over. It used to be final too, so when that terminal
+            // closed the project sat offline with the app open (Death Note -
+            // Roblox, 2026-09-25). Now: wait until nothing else is serving it
+            // here, then serve it again.
+            Next::StandBy => {
+                log_line(&app, &format!("{who}: stopped by a signal; standing by until nothing else serves it"));
+                if !stand_by(&cancel, &connection) { break; }
+                continue;
             }
-            if !free { break; }
-            continue;
-        }
-        let reason = tail.last().cloned()
-            .or_else(|| status.ok().and_then(|s| s.code()).map(|code| format!("flowviant exited with code {code}")))
-            .unwrap_or_else(|| "flowviant exited".into());
-        if !served && started.elapsed() < REFUSAL_WINDOW {
             // Said once (told), then tried again quietly: the fix is usually a
             // person's (a first commit), and after it the project should come
             // back by itself.
-            fail_project(&app, &connection.id, &reason, &mut told);
-            log_line(&app, &format!("{who}: start refused; trying again in {}s", REFUSAL_RETRY.as_secs()));
-            if !nap(&cancel, REFUSAL_RETRY) { break; }
-            continue;
+            Next::RetryRefused => {
+                let reason = supervisor_rules::exit_reason(tail.last().map(String::as_str), code);
+                fail_project(&app, &connection.id, &reason, state.announce_once());
+                log_line(&app, &format!("{who}: start refused; trying again in {}s", supervisor_rules::REFUSAL_RETRY.as_secs()));
+                if !nap(&cancel, supervisor_rules::REFUSAL_RETRY) { break; }
+                continue;
+            }
+            Next::Restart => {
+                let reason = supervisor_rules::exit_reason(tail.last().map(String::as_str), code);
+                fail_project(&app, &connection.id, &reason, state.announce_once());
+                for _ in 0..state.backoff_then_double() * 10 { if cancel.load(Ordering::SeqCst) { break; } thread::sleep(Duration::from_millis(100)); }
+            }
         }
-        fail_project(&app, &connection.id, &reason, &mut told);
-        for _ in 0..backoff * 10 { if cancel.load(Ordering::SeqCst) { break; } thread::sleep(Duration::from_millis(100)); }
-        backoff = (backoff * 2).min(60);
     }
     if let Ok(mut jobs) = app.state::<Controller>().jobs.lock() {
         if jobs.get(&connection.id).is_some_and(|current| Arc::ptr_eq(current, &cancel)) { jobs.remove(&connection.id); }
     }
 }
 
-/// Record why a project's daemon is not running (the card shows it) and notify,
-/// once, until it serves again.
-fn fail_project(app: &AppHandle, id: &str, reason: &str, told: &mut bool) {
-    if let Ok(mut failures) = app.state::<Controller>().failures.lock() { failures.insert(id.to_string(), reason.to_string()); }
-    let event = json!({ "event": "stopped-unexpectedly", "projectId": id, "message": format!("flowviant stopped: {reason}") });
-    if *told { let _ = app.emit("machine-event", &event); } else { announce(app, &event); *told = true; }
+/// Wait while something else serves the project here; true once it is free,
+/// false if the supervisor was cancelled meanwhile.
+fn stand_by(cancel: &AtomicBool, connection: &Connection) -> bool {
+    while nap(cancel, STANDBY_CHECK) {
+        if !supervisor_rules::serving_elsewhere(daemon_running(&connection.distro, &connection.id)) { return true; }
+    }
+    false
+}
+
+/// Record why a project's daemon is not running (the card shows it) and
+/// notify when `announce_it` (`Supervision::announce_once`: once, until it
+/// serves again); otherwise only relay it to the window.
+fn fail_project(app: &AppHandle, id: &str, reason: &str, announce_it: bool) {
+    record_failure(app, id, reason);
+    let event = json!({ "event": "stopped-unexpectedly", "projectId": id, "message": supervisor_rules::stopped_message(reason) });
+    if announce_it { announce(app, &event); } else { let _ = app.emit("machine-event", &event); }
     let _ = app.emit("status-changed", ());
+}
+
+fn record_failure(app: &AppHandle, id: &str, reason: &str) {
+    if let Ok(mut failures) = app.state::<Controller>().failures.lock() { failures.insert(id.to_string(), reason.to_string()); }
+}
+
+/// Why this project's daemon is not running, as the supervisor last saw it.
+pub(crate) fn failure(app: &AppHandle, id: &str) -> Option<String> {
+    app.state::<Controller>().failures.lock().ok().and_then(|failures| failures.get(id).cloned())
 }
 
 pub(crate) fn clear_failure(app: &AppHandle, id: &str) {
     if let Ok(mut failures) = app.state::<Controller>().failures.lock() { failures.remove(id); }
+}
+
+/// End this project's supervisor, if one runs: it stops at its next check and
+/// never restarts. The daemon itself is stopped by the caller.
+pub(crate) fn cancel(app: &AppHandle, id: &str) -> Result<(), String> {
+    if let Some(cancel) = app.state::<Controller>().jobs.lock().map_err(|e| e.to_string())?.remove(id) { cancel.store(true, Ordering::SeqCst); }
+    Ok(())
 }
 
 pub(crate) fn start_one(app: &AppHandle, connection: Connection) -> Result<(), String> {

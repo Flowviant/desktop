@@ -13,6 +13,7 @@ use std::collections::HashSet;
 use tauri::{AppHandle, Manager};
 
 use crate::connections::{save_connections, Connection};
+use crate::supervisor::failure;
 use crate::wsl::{binary_path, run_wsl, running_distros};
 use crate::Controller;
 
@@ -47,7 +48,7 @@ pub fn status(app: AppHandle, remote: Option<bool>) -> Result<Value, String> {
                         row["distro"] = json!(distro);
                         row["daemonVersion"] = distro_version.clone();
                         if row["running"] != json!(true) {
-                            if let Some(reason) = row["id"].as_str().and_then(|id| app.state::<Controller>().failures.lock().ok().and_then(|f| f.get(id).cloned())) {
+                            if let Some(reason) = row["id"].as_str().and_then(|id| failure(&app, id)) {
                                 row["stopReason"] = json!(reason);
                             }
                         }

@@ -4,16 +4,16 @@
 //!
 //! Split out of `lib.rs` (2026-09-26, SOLID F161). Each press acts on one
 //! saved connection through the daemon's own commands (`stop`, `machines
-//! --remove|--forget`) and the supervisor; nothing here decides on its own.
+//! --remove|--forget`) and the supervisor (`cancel`, `clear_failure`,
+//! `start_one`); nothing here decides on its own.
 
 use serde_json::Value;
-use std::sync::atomic::Ordering;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
 
 use crate::connections::{connection, save_connections};
 use crate::machine_log::log_line;
-use crate::supervisor::{clear_failure, start_one};
+use crate::supervisor::{cancel, clear_failure, start_one};
 use crate::wsl::{binary_path, distro_running, run_wsl};
 use crate::Controller;
 
@@ -22,7 +22,7 @@ pub fn project_action(app: AppHandle, id: String, action: String) -> Result<(), 
     let row = connection(&app, &id)?;
     let binary = binary_path(&row.distro)?;
     if matches!(action.as_str(), "stop" | "restart" | "disconnect" | "forget") {
-        if let Some(cancel) = app.state::<Controller>().jobs.lock().map_err(|e| e.to_string())?.remove(&id) { cancel.store(true, Ordering::SeqCst); }
+        cancel(&app, &id)?;
         run_wsl(&row.distro, None, &[&binary, "stop", "--project", &id])?;
     }
     match action.as_str() {
@@ -32,7 +32,7 @@ pub fn project_action(app: AppHandle, id: String, action: String) -> Result<(), 
             // A person's Start replaces a supervisor that is waiting out a
             // refusal or standing by, so the press acts now.
             if action == "start" {
-                if let Some(cancel) = app.state::<Controller>().jobs.lock().map_err(|e| e.to_string())?.remove(&id) { cancel.store(true, Ordering::SeqCst); }
+                cancel(&app, &id)?;
             }
             start_one(&app, row)?
         },
@@ -65,7 +65,7 @@ pub fn set_enabled(app: AppHandle, id: String, enabled: bool) -> Result<(), Stri
     save_connections(&app)?;
     let who = row.name.clone().unwrap_or_else(|| row.id.clone());
     log_line(&app, &format!("{who}: switched {}", if enabled { "on" } else { "off" }));
-    if let Some(cancel) = app.state::<Controller>().jobs.lock().map_err(|e| e.to_string())?.remove(&id) { cancel.store(true, Ordering::SeqCst); }
+    cancel(&app, &id)?;
     clear_failure(&app, &id);
     if enabled {
         start_one(&app, row)?;

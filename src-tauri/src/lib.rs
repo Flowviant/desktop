@@ -9,6 +9,7 @@
 //!   * `bundled_daemon` — putting the shipped daemon in place in a distro;
 //!   * `daemon_output` — a daemon's stderr as words (std-only);
 //!   * `supervisor` — one project's daemon: start, relay, restart, stand by;
+//!     its decisions are `supervisor_rules` (pure, std-only);
 //!   * `status`, `connect`, `project_commands` — the card's reads and presses;
 //!   * `self_update` (+ its pure rule `updates`) — updating the app itself;
 //!   * `notifications` — which machine events reach the OS (pure);
@@ -30,6 +31,7 @@ mod project_commands;
 mod self_update;
 mod status;
 mod supervisor;
+mod supervisor_rules;
 mod tray;
 mod uninstall;
 mod updates;
