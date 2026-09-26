@@ -8,6 +8,8 @@ use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::UpdaterExt;
 
 mod notifications;
+mod updates;
+use updates::ServedProject;
 
 fn on() -> bool { true }
 
@@ -793,9 +795,10 @@ fn quit(app: &AppHandle) {
 // tauri.conf.json) a minute after it starts and every six hours, and downloads a
 // newer installer in the background. It installs ON ITS OWN only when nothing is
 // working on this computer: installing stops the daemons, and a turn cut off
-// mid-way is lost work. "Nothing working" is measured per project this computer
-// SERVES (an inactive project's agents run elsewhere); anything unmeasured counts
-// as busy. The card also offers "Restart now" (a person's press, confirmed).
+// mid-way is lost work. "Nothing working" is measured per project whose daemon
+// runs HERE, by that daemon itself (`busy` in its local `status --json`, see
+// updates.rs); anything unmeasured counts as busy. The card also offers
+// "Restart now" (a person's press, confirmed).
 // The installer runs passively with /UPDATE (so the uninstall-cleanup hook skips)
 // and relaunches the app with its own arguments, so a tray start stays in the tray.
 
@@ -830,30 +833,31 @@ async fn stage_update(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// True only when no project whose daemon RUNS HERE and serves has a working
-/// agent. A project not running on this computer has nothing here to cut off.
+/// True only when every project whose daemon RUNS HERE reports a MEASURED idle —
+/// the rule is `updates::can_auto_install`; this only reads each running
+/// distro's LOCAL `status --json` (the daemon's own `busy`). A project not
+/// running on this computer has nothing here to cut off; anything unread or
+/// unmeasured holds the install.
 fn machine_idle(app: &AppHandle) -> bool {
     let rows = app.state::<Controller>().connections.lock().map(|rows| rows.clone()).unwrap_or_default();
     // A stopped distro runs nothing, and asking it would boot it.
     let running = running_distros();
     let distros: HashSet<String> = rows.iter().map(|row| row.distro.clone()).filter(|d| running.contains(d)).collect();
-    for distro in distros {
-        let Ok(binary) = binary_path(&distro) else { return false };
-        let Ok(raw) = run_wsl(&distro, None, &[&binary, "status", "--json", "--remote"]) else { return false };
-        let Ok(value) = serde_json::from_str::<Value>(&raw) else { return false };
-        for project in value["projects"].as_array().into_iter().flatten() {
-            if !rows.iter().any(|row| project["id"] == json!(row.id)) { continue; }
-            if project["running"] != json!(true) { continue; }
-            match project["remote"]["role"].as_str() {
-                Some("inactive") => continue,
-                Some("serving") => (),
-                _ => return false,
-            }
-            let Some(agents) = project["remote"]["agents"].as_array() else { return false };
-            if agents.iter().any(|agent| agent["status"] == "working" && agent["parked"] != json!(true)) { return false; }
-        }
-    }
-    true
+    let reads: Vec<Option<Vec<ServedProject>>> = distros.iter().map(|distro| {
+        let binary = binary_path(distro).ok()?;
+        let raw = run_wsl(distro, None, &[&binary, "status", "--json"]).ok()?;
+        let value = serde_json::from_str::<Value>(&raw).ok()?;
+        Some(served_projects(&value, &rows))
+    }).collect();
+    updates::can_auto_install(&reads)
+}
+
+/// The projects this app serves, as one status read measured them.
+fn served_projects(status: &Value, rows: &[Connection]) -> Vec<ServedProject> {
+    status["projects"].as_array().into_iter().flatten()
+        .filter(|project| rows.iter().any(|row| project["id"] == json!(row.id)))
+        .map(|project| ServedProject { running: project["running"] == json!(true), busy: project["busy"].as_bool() })
+        .collect()
 }
 
 fn install_pending(app: &AppHandle) -> Result<(), String> {
