@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseWslPath, reduceEvent, rowState, trayState, type Project } from './model';
 import { readFileSync } from 'node:fs';
-import { stripComments } from '../../web/src/test/stripComments';
+import { stripComments } from '@flowviant/shared/test/stripComments';
 
 const row = (running: boolean | null, holder: string | null): Project => ({ id: 'p', name: 'Project', dir: '/home/me/repo', distro: 'Ubuntu', running, holder, lastPoll: null, logFile: '', runtimes: [] });
 

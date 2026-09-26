@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { PROJECT_TINT_COUNT, projectTintIndex } from '@flowviant/shared';
+import { stripComments } from '@flowviant/shared/test/stripComments';
 import { agentLine, deliveredLine, elapsed, fixesFor, headerState, limitHeadline, machineFixes, machineLine, projectGroups, projectLine, projectTint, runtimeLabel, WSL_STOPPED } from './trayModel';
 import type { Project, RemoteAgent, Snapshot } from '../model';
 import { stateWord } from './trayModel';
@@ -73,7 +74,7 @@ describe('tray model', () => {
     // name (`RUNTIME_LABEL`). Walks the whole desktop source tree, not one file:
     // a copy in the popover or the model is the same drift. Canary: the walk
     // sees trayModel.ts, and it asks all three.
-    const files = raw.map(([f, src]) => [f, src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)\/\/.*$/gm, '$1')] as const);
+    const files = raw.map(([f, src]) => [f, stripComments(src, f)] as const);
     const model = files.find(([f]) => f === join('tray', 'trayModel.ts'))?.[1] ?? '';
     expect(model).toContain('versionOlderThan(');
     expect(model).toContain('projectTintIndex(');
@@ -82,7 +83,8 @@ describe('tray model', () => {
     expect(offenders(/\(\\d\+\)\\\.\(\\d\+\)/)).toEqual([]); // a local `(\d+)\.(\d+)` semver parse
     expect(offenders(/function\s+olderVersion/)).toEqual([]);
     expect(offenders(/\*\s*31\b/)).toEqual([]); // the tint hash's multiplier
-    expect(offenders(/===\s*'(claude|codex|antigravity)'\s*\?\s*'(Claude|Codex|Antigravity)'/)).toEqual([]); // a local label ternary
+    // The compiler's printer may requote a string, so either quote matches.
+    expect(offenders(/===\s*['"](claude|codex|antigravity)['"]\s*\?\s*['"](Claude|Codex|Antigravity)['"]/)).toEqual([]); // a local label ternary
   });
 
   it('relays a limit on ANY CLI the machine names, Antigravity included', () => {
