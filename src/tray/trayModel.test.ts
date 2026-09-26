@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { agentLine, agentRows, deliveredLine, elapsed, fixesFor, headerState, olderVersion, projectLine } from './trayModel';
+import { agentLine, deliveredLine, elapsed, fixesFor, headerState, machineFixes, machineLine, olderVersion, projectGroups, projectLine, projectTint } from './trayModel';
 import type { Project, RemoteAgent, Snapshot } from '../model';
 import { stateWord } from './trayModel';
 
@@ -60,13 +60,52 @@ describe('tray model', () => {
     expect(agentLine({ ...agent, asks: true })).toBe('asks you a question · Answer →');
   });
 
-  it('folds limit-parked agents into their limit block and labels an uncovered park', () => {
+  it('lists limit-parked agents under their own project, and says a park it cannot explain', () => {
     const working = { ...agent, id: 'w', parked: false };
     const row = { ...project, runtimes: [{ id: 'codex', installed: true, version: null, parkedByLimit: true, message: 'Wait' }], remote: { ...project.remote!, agents: [agent, working] } };
-    expect(agentRows(row, fixesFor(snapshot(row))).map(a => a.id)).toEqual(['w']);
-    // No local limit block: the parked agent still lists, and says so.
-    expect(agentRows(project, fixesFor(snapshot(project))).map(a => a.id)).toEqual(['a']);
+    const [group] = projectGroups(snapshot(row), fixesFor(snapshot(row)));
+    expect(group.agents.map(a => a.id)).toEqual(['a', 'w']);
+    expect(group.limited).toEqual(['codex']);
+    expect(projectGroups(snapshot(project), fixesFor(snapshot(project)))[0].limited).toEqual([]);
     expect(stateWord(agent)).toBe('parked');
     expect(stateWord(working)).toBe('working');
+  });
+
+  const many = (...rows: Project[]): Snapshot => ({ schema: 1, version: '0.99.0', projects: rows, runtimes: [], cli: [] });
+  const other = (id: string, over: Partial<NonNullable<Project['remote']>> = {}): Project => ({ ...project, id, name: id, remote: { ...project.remote!, latest: null, ...over } });
+
+  it('says a CLI limit and an old daemon once for the machine, counting parks across projects', () => {
+    const codex = [{ id: 'codex', installed: true, version: null, parkedByLimit: true, message: 'Wait' }];
+    const snap = many({ ...other('a', { latest: '0.99.1' }), runtimes: codex }, { ...other('b', { latest: '0.99.1', agents: [{ ...agent, id: 'x' }, { ...agent, id: 'y' }] }), runtimes: codex });
+    expect(machineFixes(fixesFor(snap))).toEqual([
+      { kind: 'limit', runtime: 'codex', message: 'Wait', parked: 3, projects: 2 },
+      { kind: 'behind', latest: '0.99.1', version: '0.98.0' },
+    ]);
+  });
+
+  it('puts the project that needs you first, then the most recently active, and folds only a measured empty one', () => {
+    const asks = { ...agent, id: 'q', parked: false, asks: true, since: null };
+    const recent = { ...agent, id: 'r', parked: false, since: '2026-09-25T10:00:00Z' };
+    const older = { ...agent, id: 'o', parked: false, since: '2026-09-25T09:00:00Z' };
+    const snap = many(other('idle', { agents: [] }), other('unknown', { agents: null }), other('older', { agents: [older] }), other('recent', { agents: [recent] }), other('asks', { agents: [asks] }));
+    const groups = projectGroups(snap, fixesFor(snap));
+    expect(groups.map(g => g.project.id)).toEqual(['asks', 'recent', 'older', 'idle', 'unknown']);
+    expect(groups.find(g => g.project.id === 'idle')!.idle).toBe(true);
+    expect(groups.find(g => g.project.id === 'unknown')!.idle).toBe(false);
+  });
+
+  it('counts the projects in the header, and keeps one project\'s own line', () => {
+    expect(machineLine(many(other('a'), other('b'), other('c')))).toBe('Serving 3 projects · v0.98.0');
+    expect(machineLine(many(other('a'), other('b', { role: 'inactive' })))).toBe('Serving 1 of 2 projects · v0.98.0');
+    expect(machineLine(many(other('a', { role: 'inactive' }), other('b', { role: 'inactive' })))).toBe('Inactive on 2 projects · v0.98.0');
+    expect(machineLine(many(project))).toBe(projectLine(project, '0.99.0'));
+    expect(machineLine(many())).toBeNull();
+  });
+
+  it('tints a project exactly as the web app does (projectGrad in ProjectRow.tsx)', () => {
+    // Values computed with the web function; if one changes, change both.
+    expect(projectTint('f5f7db90-27fa-4d27-bd35-b8befc989122').name).toBe('cyan');
+    expect(projectTint('0b1c2d3e-aaaa-4bbb-8ccc-123456789abc').name).toBe('lilac');
+    expect(projectTint('checkout-service').name).toBe('mint');
   });
 });
