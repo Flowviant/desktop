@@ -38,8 +38,4 @@ describe('desktop contract', () => {
     const policy = readFileSync(new URL('../src-tauri/src/notifications.rs', import.meta.url), 'utf8');
     expect(policy).toContain('pub fn notification_for_event(');
   });
-  it('keeps user-facing copy on the binary command', () => {
-    const source = readFileSync(new URL('./tray/TrayPopover.tsx', import.meta.url), 'utf8');
-    expect(source).not.toMatch(/npx/i);
-  });
 });

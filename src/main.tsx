@@ -1,6 +1,7 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-import { TrayPopover, type ConnectFlow } from './tray/TrayPopover';
+import { TrayPopover } from './tray/TrayPopover';
+import type { ConnectFlow } from './tray/useTrayController';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import './style.css';
 

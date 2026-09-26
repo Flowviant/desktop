@@ -46,17 +46,34 @@ describe('tray model', () => {
     expect(fixesFor(snapshot({ ...project, remote: { ...project.remote!, latest: '0.98.0' } })).some(fix => fix.kind === 'behind')).toBe(false);
   });
 
+  // ONE WALK OF THE WHOLE DESKTOP SOURCE for every app-wide ban (merged
+  // 2026-09-26: `model.test.ts` carried a second walker for the npx ban once
+  // the tray card split into several files, SOLID F162). Canary: the walk sees
+  // the model and every file the card was split into.
+  const root = join(__dirname, '..');
+  const walk = (dir: string): string[] =>
+    readdirSync(dir, { withFileTypes: true }).flatMap(e =>
+      e.isDirectory() ? walk(join(dir, e.name)) : /\.tsx?$/.test(e.name) && !/\.test\.tsx?$/.test(e.name) ? [join(dir, e.name)] : []);
+  const raw = walk(root).map(f => [relative(root, f), readFileSync(f, 'utf8')] as const);
+
+  it('walks every file the tray card is made of', () => {
+    expect(raw.map(([f]) => f)).toEqual(expect.arrayContaining(
+      ['trayModel.ts', 'TrayPopover.tsx', 'useTrayController.ts', 'TrayProjectGroup.tsx', 'TrayMachineNotice.tsx', 'TrayParts.tsx']
+        .map(f => join('tray', f))));
+  });
+
+  it('keeps user-facing copy on the binary command, in every file of the app', () => {
+    // Raw source, comments included — as the one-file ban before it read.
+    for (const [file, src] of raw) expect(src, file).not.toMatch(/npx/i);
+  });
+
   it('keeps no comparator, tint hash or runtime-name table of its own anywhere in the app', () => {
     // One home each, in @flowviant/shared: "is this box behind"
     // (`versionOlderThan`), a project's tint (`projectTintIndex`) and a CLI's
     // name (`RUNTIME_LABEL`). Walks the whole desktop source tree, not one file:
     // a copy in the popover or the model is the same drift. Canary: the walk
     // sees trayModel.ts, and it asks all three.
-    const root = join(__dirname, '..');
-    const walk = (dir: string): string[] =>
-      readdirSync(dir, { withFileTypes: true }).flatMap(e =>
-        e.isDirectory() ? walk(join(dir, e.name)) : /\.tsx?$/.test(e.name) && !/\.test\.tsx?$/.test(e.name) ? [join(dir, e.name)] : []);
-    const files = walk(root).map(f => [relative(root, f), readFileSync(f, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)\/\/.*$/gm, '$1')] as const);
+    const files = raw.map(([f, src]) => [f, src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)\/\/.*$/gm, '$1')] as const);
     const model = files.find(([f]) => f === join('tray', 'trayModel.ts'))?.[1] ?? '';
     expect(model).toContain('versionOlderThan(');
     expect(model).toContain('projectTintIndex(');

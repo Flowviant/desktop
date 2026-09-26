@@ -14,7 +14,7 @@ export const fixtures: Record<string, Snapshot> = {
   empty: { schema: 1, version: null, projects: [], runtimes: [], cli: [] },
 };
 
-export const flows: Record<string, import('./TrayPopover').ConnectFlow> = {
+export const flows: Record<string, import('./useTrayController').ConnectFlow> = {
   starting: { phase: 'starting', folder: '\\\\wsl.localhost\\Ubuntu\\home\\maya\\checkout-service' },
   waiting: { phase: 'waiting', code: 'MJBG-JCX75H' },
   error: { phase: 'error', message: 'Connection was not completed: flowviant exited with code 1' },
