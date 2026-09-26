@@ -1,7 +1,10 @@
+import { projectTintIndex, versionOlderThan } from '@flowviant/shared';
 import { rowState, type MachineEvent, type Project, type RemoteAgent, type Snapshot } from '../model';
 
 export type Fix =
-  | { kind: 'limit'; projectId: string; runtime: 'claude' | 'codex'; message: string; parked: number | null }
+  /** `runtime` is the measured CLI id, relayed as reported: a limit belongs to
+   *  whichever CLI hit it, including one this app has no mark for. */
+  | { kind: 'limit'; projectId: string; runtime: string; message: string; parked: number | null }
   | { kind: 'displaced'; projectId: string; message: string }
   | { kind: 'behind'; projectId: string; latest: string; version: string }
   | { kind: 'inactive'; projectId: string; servingBoxName: string }
@@ -10,16 +13,9 @@ export type Fix =
 /** Said for a project whose WSL distro is not running (`wsl --shutdown`). */
 export const WSL_STOPPED = "WSL isn't running. This project starts again when WSL does — open a WSL terminal, or press Start.";
 
-export function olderVersion(version: string, latest: string): boolean {
-  const parse = (value: string) => /^v?(\d+)\.(\d+)\.(\d+)(?:[-+][\w.-]+)?$/.exec(value.trim())?.slice(1, 4).map(Number);
-  const current = parse(version);
-  const next = parse(latest);
-  if (!current || !next) return false;
-  for (let i = 0; i < 3; i++) {
-    if (current[i] !== next[i]) return current[i] < next[i];
-  }
-  return false;
-}
+/** "Is this box behind?" is the shared `versionOlderThan` (2026-09-26): the
+ *  tray's own comparator was a second spelling of a rule the web and API ask
+ *  in `@flowviant/shared`. Strict, and an unreadable version is never behind. */
 
 export function fixesFor(snapshot: Snapshot | null, displaced: MachineEvent[] = []): Fix[] {
   if (!snapshot) return [];
@@ -27,8 +23,10 @@ export function fixesFor(snapshot: Snapshot | null, displaced: MachineEvent[] = 
     // A project switched OFF is not a problem to report: it is stopped on purpose.
     if (project.enabled === false) return [];
     const fixes: Fix[] = [];
+    // Every CLI the machine reports parked by a limit, by its measured id — no
+    // CLI-name branch here (it used to drop Antigravity's limit on the floor).
     for (const runtime of project.runtimes) {
-      if ((runtime.id === 'claude' || runtime.id === 'codex') && runtime.parkedByLimit && runtime.message) {
+      if (runtime.parkedByLimit && runtime.message) {
         fixes.push({ kind: 'limit', projectId: project.id, runtime: runtime.id, message: runtime.message,
           parked: project.remote?.agents?.filter(agent => agent.parked && agent.runtime === runtime.id).length ?? null });
       }
@@ -38,7 +36,7 @@ export function fixesFor(snapshot: Snapshot | null, displaced: MachineEvent[] = 
     }
     const remote = project.remote;
     const version = remote?.daemonVersion ?? project.daemonVersion ?? snapshot.version;
-    if (remote?.latest && version && olderVersion(version, remote.latest)) fixes.push({ kind: 'behind', projectId: project.id, latest: remote.latest, version });
+    if (remote?.latest && version && versionOlderThan(version, remote.latest)) fixes.push({ kind: 'behind', projectId: project.id, latest: remote.latest, version });
     if (remote?.role === 'inactive' && remote.servingBoxName && remote.boxName && remote.servingBoxName !== remote.boxName) {
       fixes.push({ kind: 'inactive', projectId: project.id, servingBoxName: remote.servingBoxName });
     }
@@ -89,9 +87,10 @@ export function stateWord(agent: RemoteAgent): string {
 
 // ── Several projects on one machine (frames 2a, 2b, 2c) ─────────────────────
 
-/** A project's identity tint, hashed from its id exactly as the web app's
- *  `projectGrad` (apps/web/src/components/projects/ProjectRow.tsx) so a
- *  project wears the same colour on Home and in the tray. Keep the two in step. */
+/** A project's identity tint. The HASH is the shared `projectTintIndex`, the
+ *  same one the web app's `projectGrad` maps onto its `.grad-*` recipes, so a
+ *  project wears the same colour on Home and in the tray; these are the tray's
+ *  own stops, in the shared order (lilac, cyan, mint, sky). */
 const TINTS = [
   { name: 'lilac', from: '#d8caf6', to: '#f6d5ed', angle: 135, ink: '#623DB8' },
   { name: 'cyan', from: '#c0e6f2', to: '#c0ddf6', angle: 135, ink: '#257593' },
@@ -100,16 +99,14 @@ const TINTS = [
 ] as const;
 export type Tint = (typeof TINTS)[number];
 export function projectTint(id: string): Tint {
-  let h = 0;
-  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
-  return TINTS[Math.abs(h) % TINTS.length];
+  return TINTS[projectTintIndex(id)];
 }
 
 /** What belongs to the MACHINE, not a project: a CLI's limit (one login, so one
  *  limit, parking agents wherever they are) and an old daemon. Said once,
  *  above every group. */
 export type MachineFix =
-  | { kind: 'limit'; runtime: 'claude' | 'codex'; message: string; parked: number | null; projects: number }
+  | { kind: 'limit'; runtime: string; message: string; parked: number | null; projects: number }
   | { kind: 'behind'; latest: string; version: string };
 
 export function machineFixes(fixes: Fix[]): MachineFix[] {
