@@ -1,4 +1,4 @@
-import { projectTintIndex, versionOlderThan } from '@flowviant/shared';
+import { RUNTIME_LABEL, isAgentRuntime, projectTintIndex, versionOlderThan } from '@flowviant/shared';
 import { rowState, type MachineEvent, type Project, type RemoteAgent, type Snapshot } from '../model';
 
 export type Fix =
@@ -43,6 +43,20 @@ export function fixesFor(snapshot: Snapshot | null, displaced: MachineEvent[] = 
     if (project.running === false && remote?.role !== 'inactive') fixes.push({ kind: 'not-running', projectId: project.id, reason: project.stopReason ?? (project.wslStopped ? WSL_STOPPED : null), wslStopped: project.wslStopped === true });
     return fixes;
   });
+}
+
+/** A CLI's name in a sentence a person reads: the shared `RUNTIME_LABEL`
+ *  (one table, so the tray and the web cannot disagree), else the measured id
+ *  as reported — a CLI this build has never heard of is still named. */
+export function runtimeLabel(id: string): string {
+  return isAgentRuntime(id) ? RUNTIME_LABEL[id] : id;
+}
+
+/** The limit card's headline: which CLI hit its limit, and — when the machine
+ *  measured them — how many agents it parked. */
+export function limitHeadline(fix: { runtime: string; parked: number | null }): string {
+  const parked = fix.parked === null ? '' : ` · ${fix.parked} ${fix.parked === 1 ? 'agent' : 'agents'} parked`;
+  return `${runtimeLabel(fix.runtime)} hit its limit${parked}`;
 }
 
 /** Amber is for what is broken here (a limit, a displaced or stopped daemon).

@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join, relative } from 'node:path';
 import { PROJECT_TINT_COUNT, projectTintIndex } from '@flowviant/shared';
-import { agentLine, deliveredLine, elapsed, fixesFor, headerState, machineFixes, machineLine, projectGroups, projectLine, projectTint, WSL_STOPPED } from './trayModel';
+import { agentLine, deliveredLine, elapsed, fixesFor, headerState, limitHeadline, machineFixes, machineLine, projectGroups, projectLine, projectTint, runtimeLabel, WSL_STOPPED } from './trayModel';
 import type { Project, RemoteAgent, Snapshot } from '../model';
 import { stateWord } from './trayModel';
 
@@ -46,13 +46,26 @@ describe('tray model', () => {
     expect(fixesFor(snapshot({ ...project, remote: { ...project.remote!, latest: '0.98.0' } })).some(fix => fix.kind === 'behind')).toBe(false);
   });
 
-  it('keeps no comparator of its own', () => {
-    // One home for "is this box behind": a local semver parse coming back is
-    // the drift this pin exists for. Canary: the file does ask the shared one.
-    const src = readFileSync(join(__dirname, 'trayModel.ts'), 'utf8');
-    expect(src).toContain('versionOlderThan(');
-    expect(src).not.toContain(String.raw`(\d+)\.(\d+)`);
-    expect(src).not.toMatch(/function\s+olderVersion/);
+  it('keeps no comparator, tint hash or runtime-name table of its own anywhere in the app', () => {
+    // One home each, in @flowviant/shared: "is this box behind"
+    // (`versionOlderThan`), a project's tint (`projectTintIndex`) and a CLI's
+    // name (`RUNTIME_LABEL`). Walks the whole desktop source tree, not one file:
+    // a copy in the popover or the model is the same drift. Canary: the walk
+    // sees trayModel.ts, and it asks all three.
+    const root = join(__dirname, '..');
+    const walk = (dir: string): string[] =>
+      readdirSync(dir, { withFileTypes: true }).flatMap(e =>
+        e.isDirectory() ? walk(join(dir, e.name)) : /\.tsx?$/.test(e.name) && !/\.test\.tsx?$/.test(e.name) ? [join(dir, e.name)] : []);
+    const files = walk(root).map(f => [relative(root, f), readFileSync(f, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)\/\/.*$/gm, '$1')] as const);
+    const model = files.find(([f]) => f === join('tray', 'trayModel.ts'))?.[1] ?? '';
+    expect(model).toContain('versionOlderThan(');
+    expect(model).toContain('projectTintIndex(');
+    expect(model).toContain('RUNTIME_LABEL[');
+    const offenders = (shape: RegExp) => files.filter(([, src]) => shape.test(src)).map(([f]) => f);
+    expect(offenders(/\(\\d\+\)\\\.\(\\d\+\)/)).toEqual([]); // a local `(\d+)\.(\d+)` semver parse
+    expect(offenders(/function\s+olderVersion/)).toEqual([]);
+    expect(offenders(/\*\s*31\b/)).toEqual([]); // the tint hash's multiplier
+    expect(offenders(/===\s*'(claude|codex|antigravity)'\s*\?\s*'(Claude|Codex|Antigravity)'/)).toEqual([]); // a local label ternary
   });
 
   it('relays a limit on ANY CLI the machine names, Antigravity included', () => {
@@ -68,8 +81,20 @@ describe('tray model', () => {
     const groups = projectGroups(snap, fixes);
     expect(groups.map(g => g.limited)).toEqual([['antigravity'], ['antigravity']]);
     expect(headerState(snap, fixes)).toBe('amber');
+    // The sentence a person reads names the CLI by its label, not its id.
+    expect(limitHeadline(machineFixes(fixes)[0] as { runtime: string; parked: number | null })).toBe('Antigravity hit its limit · 3 agents parked');
+    expect(limitHeadline(fixes[0] as { runtime: string; parked: number | null })).toBe('Antigravity hit its limit · 1 agent parked');
     // A runtime reporting no limit stays unreported.
     expect(fixesFor(snapshot({ ...project, runtimes: [{ id: 'antigravity', installed: true, version: null }] })).some(fix => fix.kind === 'limit')).toBe(false);
+  });
+  it('names every CLI by the shared label, and an unknown one by its measured id', () => {
+    expect(runtimeLabel('claude')).toBe('Claude');
+    expect(runtimeLabel('codex')).toBe('Codex');
+    expect(runtimeLabel('antigravity')).toBe('Antigravity');
+    expect(runtimeLabel('gemini-next')).toBe('gemini-next');
+    // Parked agents unmeasured (no remote report): no count is claimed.
+    expect(limitHeadline({ runtime: 'codex', parked: null })).toBe('Codex hit its limit');
+    expect(limitHeadline({ runtime: 'claude', parked: 0 })).toBe('Claude hit its limit · 0 agents parked');
   });
   it('shows inactive only when another named box serves', () => {
     const row = { ...project, remote: { ...project.remote!, role: 'inactive' as const, servingBoxName: 'server' } };
@@ -152,8 +177,7 @@ describe('tray model', () => {
     }
     expect(PROJECT_TINT_COUNT).toBe(4);
     expect([0, 1, 2, 3].map(i => byIndex.get(i))).toEqual(['lilac', 'cyan', 'mint', 'sky']);
-    // No hash of its own: the multiplier coming back is a second copy.
-    expect(readFileSync(join(__dirname, 'trayModel.ts'), 'utf8')).not.toMatch(/\*\s*31\b/);
+    // No hash of its own: pinned over the whole desktop tree below.
   });
 
   it('reports nothing for a project switched off, folds it, and sorts it last', () => {

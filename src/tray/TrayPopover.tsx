@@ -6,7 +6,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { parseWslPath, reduceEvent, trayState, type MachineEvent, type RemoteAgent, type Snapshot, type TrayState } from '../model';
 import { Button } from '../ui/Button';
 import { ClaudeMark, CodexMark } from '../ui/marks';
-import { agentLine, elapsed, fixesFor, headerState, machineFixes, machineLine, projectGroups, projectTint, stateWord, type Fix, type MachineFix, type ProjectGroup } from './trayModel';
+import { agentLine, elapsed, fixesFor, headerState, limitHeadline, machineFixes, machineLine, projectGroups, projectTint, runtimeLabel, stateWord, type Fix, type MachineFix, type ProjectGroup } from './trayModel';
 
 const rowButton = 'w-full rounded-[10px] px-[10px] text-left text-[13px] hover:bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent';
 
@@ -205,7 +205,6 @@ export function TrayPopover({ preview, mode = 'tray', previewFlow, previewUpdate
   const boxName = projects.find(project => project.remote?.boxName)?.remote?.boxName ?? 'This computer';
   const groups = projectGroups(snapshot, fixes);
   const machine = machineFixes(fixes);
-  const runtimeName = (id: string) => (id === 'claude' ? 'Claude' : id === 'codex' ? 'Codex' : id);
   const menu = (page: 'machines' | 'board', label: string) => projects.length === 1
     ? <button className={`${rowButton} py-[6px]`} onClick={() => void openProject(projects[0].id, page)}>{label}</button>
     : <div>
@@ -220,7 +219,7 @@ export function TrayPopover({ preview, mode = 'tray', previewFlow, previewUpdate
     const amber = fix.kind === 'limit';
     return <div key={`${fix.kind}-${index}`} className={`mx-1 mb-[6px] flex flex-col gap-1 rounded-xl p-[10px] ${amber ? 'bg-amber-wash' : 'bg-hover'}`}>
       {fix.kind === 'limit' && <>
-        <div className="flex items-center gap-2 text-[13px] font-medium"><RuntimeMark runtime={fix.runtime} /><span>{runtimeName(fix.runtime)} hit its limit{fix.parked === null ? '' : ` · ${fix.parked} ${fix.parked === 1 ? 'agent' : 'agents'} parked`}</span></div>
+        <div className="flex items-center gap-2 text-[13px] font-medium"><RuntimeMark runtime={fix.runtime} /><span>{limitHeadline(fix)}</span></div>
         <p className="m-0 text-xs leading-[1.5]">“{fix.message}”{fix.projects > 1 && ` It's one limit for the whole machine, so it parks agents in ${fix.projects === 2 ? 'both' : `all ${fix.projects}`} projects.`}{fix.runtime !== 'claude' && fix.parked !== 0 && (fix.parked === 1 ? ' It offers to run on Claude instead.' : ' Each one below offers to run on Claude instead.')}</p>
       </>}
       {fix.kind === 'behind' && <><div className="text-[13px] font-medium">flowviant {fix.latest} is out</div><p className="m-0 text-xs leading-[1.5] text-quiet">This machine reports {fix.version}. It updates itself when idle. If it hasn't, restart it.</p></>}
@@ -281,7 +280,7 @@ export function TrayPopover({ preview, mode = 'tray', previewFlow, previewUpdate
     const amber = agent.asks || byLimit;
     return <button key={agent.id} className={`${rowButton} flex items-center gap-[10px] py-2 ${agent.asks ? 'bg-amber-wash' : ''}`} onClick={() => void openProject(projectId, 'agent', agent.id)}>
       <RuntimeMark runtime={agent.runtime} />
-      <span className="flex min-w-0 flex-1 flex-col"><span className="truncate font-medium">{agent.name}</span><span className={`text-xs ${amber ? 'text-amber-ink' : 'text-quiet'}`}>{agent.asks ? <>asks you a question · <strong className="font-medium">Answer →</strong></> : byLimit ? <>parked · {runtimeName(agent.runtime)} limit · <strong className="font-medium">Open →</strong></> : agentLine(agent)}</span></span>
+      <span className="flex min-w-0 flex-1 flex-col"><span className="truncate font-medium">{agent.name}</span><span className={`text-xs ${amber ? 'text-amber-ink' : 'text-quiet'}`}>{agent.asks ? <>asks you a question · <strong className="font-medium">Answer →</strong></> : byLimit ? <>parked · {runtimeLabel(agent.runtime)} limit · <strong className="font-medium">Open →</strong></> : agentLine(agent)}</span></span>
       {!agent.asks && !byLimit && <span className={`shrink-0 text-xs ${agent.status === 'working' && !agent.parked ? 'text-accent' : 'text-quiet'}`}>{stateWord(agent)}{time && ` · ${time}`}</span>}
     </button>;
   }
