@@ -46,7 +46,7 @@ pub(crate) fn parse_wsl_folder(path: &str) -> Result<(String, String), String> {
     } else { path };
     let parts: Vec<_> = path.split('\\').filter(|s| !s.is_empty()).collect();
     if !path.starts_with("\\\\") || parts.len() < 3 || !matches!(parts[0].to_ascii_lowercase().as_str(), "wsl$" | "wsl.localhost") {
-        return Err("Windows folders come later — pick a folder inside WSL".into());
+        return Err("Flowviant runs inside WSL — pick your project folder inside it".into());
     }
     let distro = parts[1];
     if !distro.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)) || parts[2..].iter().any(|s| *s == "." || *s == "..") {
@@ -65,11 +65,14 @@ pub(crate) fn binary_path(distro: &str) -> Result<String, String> {
 
 pub(crate) fn binary_path_for_home(home: &str) -> String { format!("{home}/.flowviant/bin/flowviant") }
 
-pub(crate) fn parse_wsl_distros(output: &[u8]) -> Vec<String> {
-    let decoded = if output.starts_with(&[0xff, 0xfe]) || (output.len() >= 2 && output[1] == 0) {
+pub(crate) fn decode_wsl(output: &[u8]) -> String {
+    if output.starts_with(&[0xff, 0xfe]) || (output.len() >= 2 && output[1] == 0) {
         String::from_utf16_lossy(&output.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect::<Vec<_>>())
-    } else { String::from_utf8_lossy(output).to_string() };
-    decoded.lines().map(|line| line.trim_matches(['\u{feff}', '\0', '\r', ' ']).to_string())
+    } else { String::from_utf8_lossy(output).to_string() }
+}
+
+pub(crate) fn parse_wsl_distros(output: &[u8]) -> Vec<String> {
+    decode_wsl(output).lines().map(|line| line.trim_matches(['\u{feff}', '\0', '\r', ' ']).to_string())
         .filter(|name| !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))).collect()
 }
 
@@ -99,7 +102,7 @@ mod tests {
         assert_eq!(parse_wsl_folder("\\\\wsl.localhost\\Ubuntu\\home\\me\\app"), Ok(("Ubuntu".into(), "/home/me/app".into())));
         assert_eq!(parse_wsl_folder("\\\\wsl$\\Debian\\srv"), Ok(("Debian".into(), "/srv".into())));
         assert_eq!(parse_wsl_folder("\\\\?\\UNC\\wsl.localhost\\Ubuntu\\home"), Ok(("Ubuntu".into(), "/home".into())));
-        assert_eq!(parse_wsl_folder("C:\\code\\app"), Err("Windows folders come later — pick a folder inside WSL".into()));
+        assert_eq!(parse_wsl_folder("C:\\code\\app"), Err("Flowviant runs inside WSL — pick your project folder inside it".into()));
         assert_eq!(parse_wsl_folder("\\\\wsl$\\Ubuntu\\home\\..\\etc"), Err("Pick a folder inside a WSL distro".into()));
         assert_eq!(parse_wsl_folder("\\\\wsl$\\Bad Name\\home"), Err("Pick a folder inside a WSL distro".into()));
     }

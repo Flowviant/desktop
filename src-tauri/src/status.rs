@@ -16,11 +16,19 @@ use tauri::{AppHandle, Manager};
 use crate::connections::{save_connections, Connection};
 use crate::supervisor::{failure, standing_by};
 use crate::supervisor_rules;
+use crate::setup;
 use crate::wsl::{binary_path, run_wsl, running_distros};
 use crate::Controller;
 
+fn status_args(binary: &str, remote: bool, refresh_auth: bool) -> Vec<&str> {
+    let mut args = vec![binary, "status", "--json"];
+    if remote { args.push("--remote"); }
+    if refresh_auth { args.push("--refresh-auth"); }
+    args
+}
+
 #[tauri::command(async)]
-pub fn status(app: AppHandle, remote: Option<bool>) -> Result<Value, String> {
+pub fn status(app: AppHandle, remote: Option<bool>, refresh_auth: Option<bool>) -> Result<Value, String> {
     // ONLY DISTROS ALREADY RUNNING. Every `wsl.exe -d <distro>` boots that
     // distro, and this runs every 30 s: it is what started WSL again after the
     // owner's `wsl --shutdown`. A project in a stopped distro is listed from the
@@ -33,12 +41,12 @@ pub fn status(app: AppHandle, remote: Option<bool>) -> Result<Value, String> {
     let mut version = Value::Null;
     for distro in distros {
         let remote_raw = if remote == Some(true) {
-            binary_path(&distro).ok().and_then(|binary| run_wsl(&distro, None, &[&binary, "status", "--json", "--remote"]).ok())
-                .or_else(|| run_wsl(&distro, None, &["flowviant", "status", "--json", "--remote"]).ok())
+            binary_path(&distro).ok().and_then(|binary| run_wsl(&distro, None, &status_args(&binary, true, refresh_auth == Some(true))).ok())
+                .or_else(|| run_wsl(&distro, None, &status_args("flowviant", true, refresh_auth == Some(true))).ok())
                 .filter(|raw| serde_json::from_str::<Value>(raw).is_ok())
         } else { None };
-        let raw = remote_raw.or_else(|| binary_path(&distro).ok().and_then(|binary| run_wsl(&distro, None, &[&binary, "status", "--json"]).ok())
-            .or_else(|| run_wsl(&distro, None, &["flowviant", "status", "--json"]).ok()));
+        let raw = remote_raw.or_else(|| binary_path(&distro).ok().and_then(|binary| run_wsl(&distro, None, &status_args(&binary, false, refresh_auth == Some(true))).ok())
+            .or_else(|| run_wsl(&distro, None, &status_args("flowviant", false, refresh_auth == Some(true))).ok()));
         if let Some(raw) = raw {
             if let Ok(mut value) = serde_json::from_str::<Value>(&raw) {
                 let distro_version = value["version"].clone();
@@ -88,5 +96,6 @@ pub fn status(app: AppHandle, remote: Option<bool>) -> Result<Value, String> {
         }
     }
     let _ = save_connections(&app);
-    Ok(json!({"schema":1, "version":version, "projects":projects, "runtimes":runtimes, "cli":cli}))
+    let setup = setup::snapshot(&running, &cli, refresh_auth == Some(true));
+    Ok(json!({"schema":1, "version":version, "projects":projects, "runtimes":runtimes, "cli":cli, "setup":setup}))
 }

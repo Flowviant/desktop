@@ -63,6 +63,90 @@ async function mountWindow() {
 }
 
 describe('the window card', () => {
+  it('offers measured WSL setup and runs the pressed step', async () => {
+    status = { ...fixtures.empty, setup: { route: 'wsl', wsl: 'missing', steps: ['installWsl'], distros: [] } };
+    render(<TrayPopover mode="window" />);
+    expect(await screen.findByRole('button', { name: 'Install WSL' })).toBeTruthy();
+    expect(screen.getByText(/Windows asks permission/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Install WSL' }));
+    expect(bridge.invoke).toHaveBeenCalledWith('setup_action', { action: 'installWsl', distro: null });
+  });
+
+  it('opens an installed but stopped distro only after a press', async () => {
+    status = { ...fixtures.empty, setup: { route: 'wsl', wsl: 'ready', steps: [], distros: [{ name: 'Ubuntu', running: false, claude: { installed: null, signedIn: null, billing: null, subscriptionType: null }, steps: ['openDistro'] }] } };
+    render(<TrayPopover mode="window" />);
+    expect(await screen.findByText(/On first launch, make a Linux name and password/)).toBeTruthy();
+    expect(bridge.invoke).not.toHaveBeenCalledWith('setup_action', expect.anything());
+    fireEvent.click(screen.getByRole('button', { name: 'Open Ubuntu' }));
+    expect(bridge.invoke).toHaveBeenCalledWith('setup_action', { action: 'openDistro', distro: 'Ubuntu' });
+  });
+
+  it('installs Claude in a running distro and offers browser sign-in after a fresh measurement', async () => {
+    status = { ...fixtures.empty, setup: { route: 'wsl', wsl: 'ready', steps: [], distros: [{ name: 'Ubuntu', running: true, claude: { installed: false, signedIn: null, billing: null, subscriptionType: null }, steps: ['installClaude'] }] } };
+    render(<TrayPopover mode="window" />);
+    expect(await screen.findByRole('button', { name: 'Install Claude Code' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Install Claude Code' }));
+    expect(bridge.invoke).toHaveBeenCalledWith('setup_action', { action: 'installClaude', distro: 'Ubuntu' });
+    status = { ...status, setup: { ...status.setup!, distros: [{ name: 'Ubuntu', running: true, claude: { installed: true, signedIn: false, billing: null, subscriptionType: null }, steps: ['signInClaude'] }] } };
+    await emit('status-changed');
+    expect(await screen.findByRole('button', { name: 'Sign in to Claude' })).toBeTruthy();
+    expect(screen.getByText(/browser for Claude subscription/)).toBeTruthy();
+    expect(screen.queryByLabelText('Code from browser')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in to Claude' }));
+    expect(bridge.invoke).toHaveBeenCalledWith('setup_action', { action: 'signInClaude', distro: 'Ubuntu' });
+    await emit('setup-event', { phase: 'code', action: 'signInClaude', message: 'Paste the code from your browser here.' });
+    expect(screen.getByLabelText('Code from browser')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Code from browser'), { target: { value: 'abc123' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send code' }));
+    expect(bridge.invoke).toHaveBeenCalledWith('setup_code', { code: 'abc123' });
+  });
+
+  it('re-measures after a setup outcome, including a failed press', async () => {
+    status = { ...fixtures.empty, setup: { route: 'wsl', wsl: 'ready', steps: [], distros: [{ name: 'Ubuntu', running: true, claude: { installed: true, signedIn: false, billing: null, subscriptionType: null }, steps: ['signInClaude'] }] } };
+    render(<TrayPopover mode="window" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign in to Claude' }));
+    const before = statusCalls();
+    await emit('setup-event', { phase: 'error', action: 'signInClaude', message: 'Claude could not sign in.' });
+    await emit('status-changed');
+    expect(statusCalls()).toBe(before + 1);
+    expect(bridge.invoke).toHaveBeenCalledWith('status', { remote: true, refreshAuth: true });
+    expect(screen.getByRole('button', { name: 'Sign in to Claude' })).toBeTruthy();
+  });
+
+  it('shows a connected project signed out and removes the step once ready', async () => {
+    const project = fixtures.serving.projects[0];
+    status = { ...fixtures.serving, projects: [{ ...project, runtimes: [{ id: 'claude', installed: true, version: '2.1.0', signedIn: false }] }] };
+    await mountWindow();
+    expect(screen.getByRole('button', { name: 'Sign in to Claude' })).toBeTruthy();
+    status = { ...status, projects: [{ ...project, runtimes: [{ id: 'claude', installed: true, version: '2.1.0', signedIn: true, billing: 'subscription', subscriptionType: 'max' }] }] };
+    await emit('status-changed');
+    expect(screen.queryByRole('button', { name: 'Sign in to Claude' })).toBeNull();
+    expect(screen.queryByText(/Set up Claude/)).toBeNull();
+  });
+
+  it('shows missing Claude on a connected project and names Console billing honestly', async () => {
+    const project = fixtures.serving.projects[0];
+    status = { ...fixtures.serving, projects: [{ ...project, runtimes: [{ id: 'claude', installed: false, version: null }] }] };
+    await mountWindow();
+    expect(screen.getByRole('button', { name: 'Install Claude Code' })).toBeTruthy();
+    status = { ...status, projects: [{ ...project, runtimes: [{ id: 'claude', installed: true, version: '2.1.0', signedIn: true, billing: 'api', subscriptionType: null }] }] };
+    await emit('status-changed');
+    expect(screen.queryByRole('button', { name: 'Install Claude Code' })).toBeNull();
+    expect(screen.getByText('Claude Code uses Console/API billing on this computer.')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Use Claude subscription' }));
+    expect(bridge.invoke).toHaveBeenCalledWith('setup_action', { action: 'signInClaude', distro: 'Ubuntu' });
+  });
+
+  it('clears the sign-in offer when auth becomes unknown and makes no refusal', async () => {
+    status = { ...fixtures.empty, setup: { route: 'wsl', wsl: 'ready', steps: [], distros: [{ name: 'Ubuntu', running: true, claude: { installed: true, signedIn: false, billing: null, subscriptionType: null }, steps: ['signInClaude'] }] } };
+    render(<TrayPopover mode="window" />);
+    expect(await screen.findByRole('button', { name: 'Sign in to Claude' })).toBeTruthy();
+    status = { ...status, setup: { ...status.setup!, distros: [{ name: 'Ubuntu', running: true, claude: { installed: true, signedIn: null, billing: null, subscriptionType: null }, steps: [] }] } };
+    await emit('status-changed');
+    expect(screen.getByText('No project on this computer yet')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Sign in to Claude' })).toBeNull();
+  });
+
   it('asks for status again on status-changed, and renders the answer', async () => {
     await mountWindow();
     const before = statusCalls();
@@ -116,7 +200,7 @@ describe('the window card', () => {
     bridge.folder = 'C:\\dev\\repo';
     await mountWindow();
     await emit('begin-connect');
-    expect(screen.getByRole('alert').textContent).toContain('Windows folders come later');
+    expect(screen.getByRole('alert').textContent).toContain('Flowviant runs inside WSL');
     expect(bridge.invoke).not.toHaveBeenCalledWith('connect', expect.anything());
   });
 
