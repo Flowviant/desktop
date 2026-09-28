@@ -15,7 +15,7 @@ set -eu
 src=$(cd "$(dirname "$0")/../src-tauri/src" && pwd)
 out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
-for module in updates notifications wsl daemon_output supervisor_rules; do
+for module in updates notifications wsl daemon_output supervisor_rules setup_rules; do
   rustc --edition 2021 --test -A dead_code "$src/$module.rs" -o "$out/$module"
   "$out/$module" --quiet
 done

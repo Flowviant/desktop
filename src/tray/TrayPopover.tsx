@@ -15,6 +15,7 @@ import { fixesFor, headerState, machineFixes, machineLine, projectGroups } from 
 import { rowButton } from './TrayParts';
 import { TrayMachineNotice } from './TrayMachineNotice';
 import { TrayProjectGroup } from './TrayProjectGroup';
+import { setupForEmpty, TraySetup } from './TraySetup';
 import { useTrayController, type ConnectFlow } from './useTrayController';
 
 function ConnectBlock({ flow, onConnect, onReopen }: { flow: ConnectFlow | null; onConnect: () => void; onReopen: (code: string) => void }) {
@@ -41,8 +42,8 @@ export function TrayPopover(props: { preview?: Snapshot; mode?: 'tray' | 'window
   const { preview } = props;
   const {
     windowed, snapshot, visible, flow, update, confirmUpdate, setConfirmUpdate, appVersion, checking,
-    switching, displaced, confirmQuit, setConfirmQuit, expanded, setExpanded, notice, now, card, content,
-    connect, checkNow, openProject, setEnabled, start, reopenConnect, installUpdate, quit, openLogs,
+    switching, displaced, confirmQuit, setConfirmQuit, expanded, setExpanded, notice, now, card, content, setupFlow,
+    connect, checkNow, openProject, setEnabled, start, setupAction, setupCode, reopenConnect, installUpdate, quit, openLogs,
   } = useTrayController(props);
 
   const projects = snapshot?.projects ?? [];
@@ -64,11 +65,14 @@ export function TrayPopover(props: { preview?: Snapshot; mode?: 'tray' | 'window
     <header className="flex flex-col gap-[2px] px-[10px] pb-3 pt-[10px]"><div className="flex items-center gap-2"><span className={`h-2 w-2 rounded-full ${dot === 'ok' ? 'bg-ok' : dot === 'amber' ? 'bg-amber' : 'bg-dim'}`} /><span className="text-sm font-semibold">{boxName}</span></div>{machineLine(snapshot) && <div className="text-xs text-quiet">{machineLine(snapshot)}</div>}</header>
     <ConnectBlock flow={flow} onConnect={() => void connect()} onReopen={reopenConnect} />
     {!snapshot && !flow && <p className="m-0 px-[10px] pb-[10px] text-xs text-quiet" role="status">Looking for projects in WSL…</p>}
-    {snapshot && (projects.length === 0 ? (!flow && <div className="mx-1 mb-[6px] flex flex-col gap-2 rounded-xl bg-hover p-[10px]">
+    {snapshot && (projects.length === 0 ? (!flow && <>
+      {setupForEmpty(snapshot.setup).map((offer, index) => <TraySetup key={`${offer.distro ?? 'wsl'}-${index}`} offer={offer} flow={setupFlow} onRun={(step, distro) => void setupAction(step, distro)} onCode={code => void setupCode(code)} />)}
+      {setupForEmpty(snapshot.setup).every(offer => offer.steps.length === 0) && <div className="mx-1 mb-[6px] flex flex-col gap-2 rounded-xl bg-hover p-[10px]">
       <span className="text-[13px] font-medium">No project on this computer yet</span>
       <span className="text-xs leading-[1.5] text-quiet">Pick your repository's folder inside WSL, then approve it in your browser.</span>
       <Button tone="solid" className="self-start" onClick={() => void connect()}>Connect a project</Button>
-    </div>) : <>
+      </div>}
+    </>) : <>
       {update && <div className="mx-1 mb-[6px] flex flex-col gap-1 rounded-xl bg-hover p-[10px]">
         <div className="text-[13px] font-medium">Flowviant Machines {update} is ready</div>
         {confirmUpdate
@@ -87,6 +91,10 @@ export function TrayPopover(props: { preview?: Snapshot; mode?: 'tray' | 'window
         onToggle={enabled => void setEnabled(group.project.id, enabled)}
         onOpen={(page, agent) => void openProject(group.project.id, page, agent)}
         onStart={() => void start(group.project.id)}
+        setup={snapshot.setup}
+        setupFlow={setupFlow}
+        onSetup={(step, distro) => void setupAction(step, distro)}
+        onSetupCode={code => void setupCode(code)}
       />)}
       <div className="mx-[10px] my-[6px] h-px bg-hairline" />
       {confirmQuit ? <div className="px-[10px] py-[6px]"><p className="mt-0 text-xs leading-[1.5] text-quiet">Stops every project on this computer and closes the app. Nothing is lost: opening Flowviant Machines again starts the projects that are on. To pause one project, use its switch instead.</p><div className="flex gap-2"><Button tone="solid" onClick={quit}>Quit</Button><Button tone="quiet" onClick={() => setConfirmQuit(false)}>Cancel</Button></div></div> : <nav className="flex flex-col text-[13px]">{menu('machines', 'Open Machines')}{connectRow}<button className={`${rowButton} py-[6px]`} onClick={openLogs}>Open logs</button><button className={`${rowButton} py-[6px]`} onClick={() => setConfirmQuit(true)}>Quit Flowviant Machines…</button></nav>}

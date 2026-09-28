@@ -21,13 +21,14 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { open } from '@tauri-apps/plugin-dialog';
-import { parseWslPath, reduceEvent, trayState, type MachineEvent, type Snapshot, type TrayState } from '../model';
+import { parseWslPath, reduceEvent, trayState, type MachineEvent, type SetupStep, type Snapshot, type TrayState } from '../model';
 
 /** Connecting a folder: set up flowviant in WSL, then the person approves the
  *  code on the web page the browser opened. Errors are the daemon's own words. */
 export type ConnectFlow = { phase: 'starting'; folder: string } | { phase: 'waiting'; code: string | null } | { phase: 'error'; message: string };
 
 export type UpdateCheck = 'idle' | 'checking' | 'current' | 'failed';
+export type SetupFlow = { action: SetupStep; distro: string | null; phase: 'progress' | 'browser' | 'code' | 'done' | 'restart' | 'terminal' | 'error'; message: string };
 
 export function useTrayController({ preview, mode = 'tray', previewFlow, previewUpdate }: { preview?: Snapshot; mode?: 'tray' | 'window'; previewFlow?: ConnectFlow; previewUpdate?: string }) {
   const windowed = mode === 'window';
@@ -45,21 +46,27 @@ export function useTrayController({ preview, mode = 'tray', previewFlow, preview
   const [confirmQuit, setConfirmQuit] = useState(false);
   const [expanded, setExpanded] = useState<'machines' | 'board' | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [setupFlow, setSetupFlow] = useState<SetupFlow | null>(null);
   const [now, setNow] = useState(Date.now());
   const card = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const visibleRef = useRef(Boolean(preview));
+  const forceAuthRef = useRef(false);
 
   // The window is always alive (hidden when closed), so it is also what keeps
   // the tray icon's state current; it asks the server for the remote half only
   // while someone can see it.
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (refreshAuth = false) => {
     if (preview) return;
     const shown = windowed ? await getCurrentWindow().isVisible().catch(() => false) : visibleRef.current;
     if (!windowed && !shown) return;
     try {
-      const next = await invoke<Snapshot>('status', { remote: shown });
+      const next = await invoke<Snapshot>('status', { remote: shown, refreshAuth });
       setSnapshot(next);
+      setSetupFlow(current => {
+        const claude = next.setup?.distros.find(row => row.name === current?.distro)?.claude;
+        return current?.action === 'signInClaude' && claude?.signedIn === true && claude.billing !== 'api' ? null : current;
+      });
       if (windowed) setTray(current => trayState(next.projects, current === 'attention'));
     }
     catch (error) { setNotice(String(error)); }
@@ -74,7 +81,9 @@ export function useTrayController({ preview, mode = 'tray', previewFlow, preview
     try {
       const folder = await open({ directory: true, multiple: false, title: 'Choose your repository folder inside WSL' });
       if (!folder || Array.isArray(folder)) return;
-      if (!parseWslPath(folder)) { setFlow({ phase: 'error', message: 'Windows folders come later — pick your repository folder inside WSL (it starts with \\\\wsl.localhost\\).' }); return; }
+      // UNIX ONLY (the owner, 2026-09-28): no native Windows daemon is coming,
+      // so a Windows folder is pointed at WSL rather than promised a later phase.
+      if (!parseWslPath(folder)) { setFlow({ phase: 'error', message: 'Flowviant runs inside WSL — pick your project folder inside it (it starts with \\\\wsl.localhost\\).' }); return; }
       setFlow({ phase: 'starting', folder });
       await invoke('connect', { folder });
     } catch (error) { setFlow({ phase: 'error', message: String(error) }); }
@@ -108,6 +117,21 @@ export function useTrayController({ preview, mode = 'tray', previewFlow, preview
   useEffect(() => {
     if (preview) return;
     let active = true;
+    const off = listen<{ phase: SetupFlow['phase']; action: SetupStep; message: string }>('setup-event', event => {
+      if (!active) return;
+      const { phase, action, message } = event.payload;
+      setSetupFlow(current => current?.action === action ? {
+        ...current, phase,
+        message: phase === 'progress' && action === 'installClaude' ? `${current.message}${message}`.slice(-1800) : message,
+      } : current);
+      if (['done', 'error', 'restart', 'terminal'].includes(phase)) forceAuthRef.current = true;
+    });
+    return () => { active = false; void off.then(stop => stop()); };
+  }, [preview, refresh]);
+
+  useEffect(() => {
+    if (preview) return;
+    let active = true;
     const offVisible = listen<boolean>('tray-visible', event => {
       // The popover's own show/hide; the window is always rendered.
       if (!active || windowed) return;
@@ -123,7 +147,13 @@ export function useTrayController({ preview, mode = 'tray', previewFlow, preview
       if (event.payload.event === 'serving' && event.payload.projectId) setDisplaced(current => current.filter(item => item.projectId !== event.payload.projectId));
       if (visibleRef.current || windowed) void refresh();
     });
-    const offStatus = listen('status-changed', () => { if (visibleRef.current || windowed) void refresh(); });
+    const offStatus = listen('status-changed', () => {
+      if (visibleRef.current || windowed) {
+        const fresh = forceAuthRef.current;
+        forceAuthRef.current = false;
+        void refresh(fresh);
+      }
+    });
     void getCurrentWindow().isVisible().then(shown => { if (active && shown) { visibleRef.current = true; setVisible(true); void refresh(); } });
     return () => { active = false; void offVisible.then(off => off()); void offMachine.then(off => off()); void offStatus.then(off => off()); };
   }, [preview, windowed, refresh]);
@@ -144,9 +174,9 @@ export function useTrayController({ preview, mode = 'tray', previewFlow, preview
 
   useEffect(() => {
     if (!visible || preview) return;
-    const timer = window.setInterval(() => { setNow(Date.now()); void refresh(); }, 30_000);
+    const timer = window.setInterval(() => { setNow(Date.now()); void refresh(setupFlow?.phase === 'terminal'); }, 30_000);
     return () => window.clearInterval(timer);
-  }, [visible, preview, refresh]);
+  }, [visible, preview, refresh, setupFlow?.phase]);
 
   useEffect(() => {
     if (!visible || windowed) return;
@@ -188,6 +218,20 @@ export function useTrayController({ preview, mode = 'tray', previewFlow, preview
     catch (error) { setNotice(String(error)); }
   }
 
+  async function setupAction(action: SetupStep, distro: string | null) {
+    if (preview) return;
+    forceAuthRef.current = true;
+    setSetupFlow({ action, distro, phase: 'progress', message: '' });
+    try { await invoke('setup_action', { action, distro }); }
+    catch (error) { forceAuthRef.current = false; setSetupFlow({ action, distro, phase: 'error', message: String(error) }); await refresh(true); }
+  }
+
+  async function setupCode(code: string) {
+    if (preview) return;
+    try { await invoke('setup_code', { code }); setSetupFlow(current => current && { ...current, phase: 'progress', message: 'Checking the code…' }); }
+    catch (error) { setSetupFlow(current => current && { ...current, phase: 'error', message: String(error) }); }
+  }
+
   function reopenConnect(code: string) {
     if (!preview) void invoke('open_connect_page', { code }).catch(error => setNotice(String(error)));
   }
@@ -206,7 +250,7 @@ export function useTrayController({ preview, mode = 'tray', previewFlow, preview
 
   return {
     windowed, snapshot, visible, flow, update, confirmUpdate, setConfirmUpdate, appVersion, checking,
-    switching, displaced, confirmQuit, setConfirmQuit, expanded, setExpanded, notice, now, card, content,
-    connect, checkNow, openProject, setEnabled, start, reopenConnect, installUpdate, quit, openLogs,
+    switching, displaced, confirmQuit, setConfirmQuit, expanded, setExpanded, notice, now, card, content, setupFlow,
+    connect, checkNow, openProject, setEnabled, start, setupAction, setupCode, reopenConnect, installUpdate, quit, openLogs,
   };
 }

@@ -1,9 +1,12 @@
-export type Runtime = { id: string; installed: boolean; version: string | null; parkedByLimit?: boolean; message?: string };
+export type Runtime = { id: string; installed: boolean; version: string | null; signedIn?: boolean | null; billing?: 'subscription' | 'api' | null; subscriptionType?: string | null; parkedByLimit?: boolean; message?: string };
+export type SetupStep = 'installWsl' | 'openDistro' | 'installClaude' | 'signInClaude';
+export type SetupDistro = { name: string; running: boolean; claude: { installed: boolean | null; signedIn: boolean | null; billing: 'subscription' | 'api' | null; subscriptionType: string | null }; steps: SetupStep[] };
+export type SetupRoute = { route: 'wsl'; wsl: 'missing' | 'noDistro' | 'ready' | 'unknown'; steps: SetupStep[]; distros: SetupDistro[] };
 // `runtime` is relayed as stored: a runtime this app has no mark for still lists.
 export type RemoteAgent = { id: string; name: string; status: string; runtime: string; delivered: number; total: number; asks: boolean; parked: boolean; since: string | null };
 export type RemoteProject = { at: string; boxName: string | null; role: 'serving' | 'inactive' | null; servingBoxName: string | null; daemonVersion: string | null; latest: string | null; agents: RemoteAgent[] | null; pressure: { reason: string; at: string } | null };
 export type Project = { id: string; name: string | null; dir: string | null; distro: string; daemonVersion?: string | null; stopReason?: string | null; enabled?: boolean; wslStopped?: boolean; remote?: RemoteProject | null; running: boolean | null; holder: string | null; /** The daemon's own measurement (CLI 2026-09-26); null or absent = unknown, never idle. */ busy?: boolean | null; /** What a standing-down daemon is finishing (`web → prod`), from its lock (CLI 2026-09-26); null or absent = not draining, or an older daemon. */ draining?: string | null; /** This app's supervisor is standing by for it, so it starts again once the drain ends (status.rs). */ standingBy?: boolean; lastPoll: string | null; logFile: string; runtimes: Runtime[] };
-export type Snapshot = { schema: number; version: string | null; projects: Project[]; runtimes: Runtime[]; cli: { distro: string; runtimes: Runtime[] }[] };
+export type Snapshot = { schema: number; version: string | null; projects: Project[]; runtimes: Runtime[]; cli: { distro: string; runtimes: Runtime[] }[]; setup?: SetupRoute };
 export type MachineEvent = { event: string; projectId?: string; message?: string; runtime?: string; from?: string; to?: string; code?: string; /** `draining`: what it is finishing, `target → env`. */ deploy?: string };
 export type TrayState = 'serving' | 'idle' | 'attention';
 

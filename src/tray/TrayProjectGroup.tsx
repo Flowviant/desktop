@@ -9,12 +9,14 @@
  * machine's plumbing change for their own reasons.
  */
 
-import type { RemoteAgent } from '../model';
+import type { RemoteAgent, SetupRoute, SetupStep } from '../model';
 import { Button } from '../ui/Button';
 import { RuntimeMark, rowButton } from './TrayParts';
 import { agentLine, drainLine, elapsed, projectTint, runtimeLabel, stateWord, type Fix, type ProjectGroup } from './trayModel';
+import { setupForProject, TraySetup } from './TraySetup';
+import type { SetupFlow } from './useTrayController';
 
-export function TrayProjectGroup({ group, index, on, now, onToggle, onOpen, onStart }: {
+export function TrayProjectGroup({ group, index, on, now, onToggle, onOpen, onStart, setup, setupFlow, onSetup, onSetupCode }: {
   group: ProjectGroup;
   index: number;
   /** The switch's position: its own pending answer, else the measured state. */
@@ -23,6 +25,10 @@ export function TrayProjectGroup({ group, index, on, now, onToggle, onOpen, onSt
   onToggle: (enabled: boolean) => void;
   onOpen: (page: string, agent?: string) => void;
   onStart: () => void;
+  setup?: SetupRoute;
+  setupFlow: SetupFlow | null;
+  onSetup: (step: SetupStep, distro: string | null) => void;
+  onSetupCode: (code: string) => void;
 }) {
   const { project } = group;
   const name = project.name ?? project.id;
@@ -47,6 +53,7 @@ export function TrayProjectGroup({ group, index, on, now, onToggle, onOpen, onSt
     {index > 0 && <div className="mx-[10px] mt-[6px] h-px bg-[hsl(220_14%_94%)]" />}
     {header}
     {group.fixes.filter(fix => !group.off || fix.kind === 'draining').map((fix, i) => <ProjectNotice key={`${fix.projectId}-${fix.kind}-${i}`} fix={fix} name={name} onOpen={onOpen} onStart={onStart} />)}
+    {!group.off && <TraySetup offer={setupForProject(project, setup)} flow={setupFlow} onRun={onSetup} onCode={onSetupCode} />}
     {!group.off && group.agents.map(agent => <AgentRow key={agent.id} agent={agent} limitParked={group.limited.includes(agent.runtime)} now={now} onOpen={onOpen} />)}
     {!group.off && project.remote?.pressure && <div className="px-[10px] py-2 text-xs text-quiet">Waiting for the machine — {project.remote.pressure.reason}.</div>}
   </section>;
