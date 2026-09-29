@@ -27,4 +27,4 @@ Committers change the source without another review; a change from anyone else i
 
 ## Privacy
 
-On its own, the app makes one request: the update check (`https://api.flowviant.com/dl/desktop/latest.json`, a minute after start and every six hours), which carries nothing about you or your projects. Everything else follows a press of yours. See the [policy page](https://flowviant.com/code-signing#privacy) and the [Flowviant Privacy Policy](https://flowviant.com/privacy).
+On its own, the app makes one request: the update check (`https://api.flowviant.com/dl/desktop/latest.json`, a minute after start, then hourly, and on opening its window or tray card if it has not checked in ten minutes), which carries nothing about you or your projects. Everything else follows a press of yours. See the [policy page](https://flowviant.com/code-signing#privacy) and the [Flowviant Privacy Policy](https://flowviant.com/privacy).

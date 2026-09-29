@@ -20,7 +20,7 @@ The app's own log (every start, exit, standby, retry, update, switch) is `%LOCAL
 
 ### What it sends over the network
 
-On its own, only the update check: a minute after it starts and every six hours it downloads `https://api.flowviant.com/dl/desktop/latest.json`. Everything else follows a press: connecting a project opens `app.flowviant.com` in the browser, and from then on the daemon runs that project against `api.flowviant.com` under the project's credential; the setup checklist downloads WSL (Microsoft) and Claude Code's installer (Anthropic). The [code signing policy](https://flowviant.com/code-signing) has the full statement.
+On its own, only the update check: a minute after it starts, then hourly, and when you open its window or tray card if it has not checked in the last ten minutes, it downloads `https://api.flowviant.com/dl/desktop/latest.json`. Everything else follows a press: connecting a project opens `app.flowviant.com` in the browser, and from then on the daemon runs that project against `api.flowviant.com` under the project's credential; the setup checklist downloads WSL (Microsoft) and Claude Code's installer (Anthropic). The [code signing policy](https://flowviant.com/code-signing) has the full statement.
 
 ## Uninstall
 
