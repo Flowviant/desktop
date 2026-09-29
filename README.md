@@ -14,7 +14,7 @@ Flowviant stays Unix: the daemon is a Linux program, and this app is how a Windo
 - **Say what the machine is doing** — which projects it serves, what their agents are doing, a CLI limit, a daemon that is behind — in the window and in the tray popover (one card), with native notifications only for machine events.
 - **Update itself** (see *Releases and code signing*), installing only while no project this computer serves has a working agent.
 
-The app starts at sign-in by default (in the tray, via `--autostart`); **Start at login** in the tray menu turns that off. Opening the app yourself opens its window. Closing the window hides it; Quit stops every daemon and closes the app. Release builds are GUI-subsystem and start every `wsl.exe` with `CREATE_NO_WINDOW`, so no console window appears.
+The app does not start at sign-in until you ask. **Start Flowviant when I sign in to Windows**, a switch in the window and the same words as a check item in the tray menu, adds the Windows startup entry (the app then starts in the tray, via `--autostart`) and removes it; it is off on a new install. An install that already starts at sign-in (0.0.15 and older turned it on the first time they ran) keeps it until you turn it off. Opening the app yourself opens its window. Closing the window hides it; Quit stops every daemon and closes the app. Release builds are GUI-subsystem and start every `wsl.exe` with `CREATE_NO_WINDOW`, so no console window appears.
 
 The app's own log (every start, exit, standby, retry, update, switch) is `%LOCALAPPDATA%\com.flowviant.desktop\logs\machines.log` (card › Open logs); each daemon's log is `flowviant logs` in WSL.
 
@@ -46,7 +46,7 @@ bun run dev      # the app, against the Vite dev server
 bun run build    # an unsigned NSIS installer under src-tauri\target\release\bundle\nsis
 ```
 
-Verify a build on Windows by selecting a WSL Git checkout, completing the browser login, starting and stopping it, checking the Board/Machines/log links, then restarting Windows to check autostart.
+Verify a build on Windows by selecting a WSL Git checkout, completing the browser login, starting and stopping it, checking the Board/Machines/log links, then turning on **Start Flowviant when I sign in to Windows** and restarting Windows to check that it starts in the tray.
 
 <details>
 <summary>Compile-checking from Linux</summary>
@@ -68,6 +68,10 @@ Releases are built only by [`.github/workflows/release.yml`](.github/workflows/r
 
 The updater's private key is a repository secret and never leaves GitHub Actions. Lose it and installed apps can no longer update themselves. [CODE_SIGNING.md](CODE_SIGNING.md) summarizes the signing policy.
 
+## Font
+
+The interface is set in [Geist](https://vercel.com/font), by Vercel in collaboration with basement.studio, under the [SIL Open Font License 1.1](public/fonts/OFL.txt). The variable font and its licence are in `public/fonts/` and ship inside the app together; Windows' Segoe UI is only the fallback.
+
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). The bundled Geist font is under the SIL Open Font License 1.1 ([`public/fonts/OFL.txt`](public/fonts/OFL.txt)).

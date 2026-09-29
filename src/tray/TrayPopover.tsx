@@ -12,7 +12,7 @@
 import { Button } from '../ui/Button';
 import { parseWslPath, type Snapshot } from '../model';
 import { fixesFor, headerState, machineFixes, machineLine, projectGroups } from './trayModel';
-import { rowButton } from './TrayParts';
+import { rowButton, Switch } from './TrayParts';
 import { TrayMachineNotice } from './TrayMachineNotice';
 import { TrayProjectGroup } from './TrayProjectGroup';
 import { setupForEmpty, TraySetup } from './TraySetup';
@@ -35,6 +35,20 @@ function ConnectBlock({ flow, onConnect, onReopen }: { flow: ConnectFlow | null;
   </div>;
 }
 
+/** START AT SIGN-IN, in the window only (the tray menu has the same item):
+ *  off until pressed, so a new install changes nothing at sign-in until the
+ *  person asks (autostart_rules.rs). The window is what a first launch opens. */
+function StartAtLogin({ on, onToggle }: { on: boolean; onToggle: (on: boolean) => void }) {
+  const label = 'Start Flowviant when I sign in to Windows';
+  return <div className="mt-[6px] flex items-start gap-[10px] px-[10px] py-2">
+    <div className="flex min-w-0 flex-1 flex-col gap-[2px]">
+      <span className="text-[13px]">{label}</span>
+      {!on && <span className="text-xs leading-[1.5] text-quiet">Off: projects on this computer start when you open Flowviant Machines.</span>}
+    </div>
+    <span className="pt-[2px]"><Switch on={on} label={label} onToggle={onToggle} /></span>
+  </div>;
+}
+
 /** The one Flowviant Machines surface (frames 1c, 1d, 1e). `tray` is the
  *  popover over the notification area; `window` is the same card in the app's
  *  own window, which a launch opens and which runs the connect flow. */
@@ -42,8 +56,8 @@ export function TrayPopover(props: { preview?: Snapshot; mode?: 'tray' | 'window
   const { preview } = props;
   const {
     windowed, snapshot, visible, flow, update, confirmUpdate, setConfirmUpdate, appVersion, checking,
-    switching, displaced, confirmQuit, setConfirmQuit, expanded, setExpanded, notice, now, card, content, setupFlow,
-    connect, checkNow, openProject, setEnabled, start, setupAction, setupCode, reopenConnect, installUpdate, quit, openLogs,
+    switching, displaced, confirmQuit, setConfirmQuit, expanded, setExpanded, notice, now, card, content, setupFlow, startAtLogin,
+    connect, checkNow, openProject, setEnabled, start, setupAction, setupCode, reopenConnect, installUpdate, quit, openLogs, setStartAtLogin,
   } = useTrayController(props);
 
   const projects = snapshot?.projects ?? [];
@@ -99,6 +113,7 @@ export function TrayPopover(props: { preview?: Snapshot; mode?: 'tray' | 'window
       <div className="mx-[10px] my-[6px] h-px bg-hairline" />
       {confirmQuit ? <div className="px-[10px] py-[6px]"><p className="mt-0 text-xs leading-[1.5] text-quiet">Stops every project on this computer and closes the app. Nothing is lost: opening Flowviant Machines again starts the projects that are on. To pause one project, use its switch instead.</p><div className="flex gap-2"><Button tone="solid" onClick={quit}>Quit</Button><Button tone="quiet" onClick={() => setConfirmQuit(false)}>Cancel</Button></div></div> : <nav className="flex flex-col text-[13px]">{menu('machines', 'Open Machines')}{connectRow}<button className={`${rowButton} py-[6px]`} onClick={openLogs}>Open logs</button><button className={`${rowButton} py-[6px]`} onClick={() => setConfirmQuit(true)}>Quit Flowviant Machines…</button></nav>}
     </>)}
+    {windowed && startAtLogin !== null && <StartAtLogin on={startAtLogin} onToggle={on => void setStartAtLogin(on)} />}
     {notice && <div role="alert" className="px-[10px] py-2 text-xs text-amber-ink">{notice}</div>}
     {appVersion && <div className="flex items-center justify-between gap-2 px-[10px] pb-1 pt-2 text-[11px] text-quiet">
       <span>Flowviant Machines {appVersion}</span>

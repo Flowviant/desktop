@@ -1,11 +1,15 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-/* Windows' own UI face. The app's Switzer is not bundled: its licence (ITF
-   Free Font License) forbids redistributing the file from a public repository,
-   and a signed open-source build carries no proprietary parts. */
+/* GEIST (the owner, 2026-09-29), in place of the app's Switzer, whose licence
+   (ITF Free Font License) forbids redistributing the file from a public
+   repository. Geist is Vercel's, under the SIL Open Font License 1.1: the
+   variable file and its licence ship together from public/fonts/, so the
+   licence travels with the font inside the installer. Windows' own UI face
+   is only the fallback. */
+@font-face { font-family: Geist; src: url('/fonts/Geist-Variable.woff2') format('woff2'); font-style: normal; font-weight: 100 900; font-display: swap; }
 html, body, #root { min-height: 100%; }
-body { margin: 0; color: hsl(222 22% 13%); background: #fff; font-family: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif; }
+body { margin: 0; color: hsl(222 22% 13%); background: #fff; font-family: Geist, 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif; }
 body.tray-window { background: transparent; }
 body.tray-preview { min-height: 100vh; background: linear-gradient(160deg, hsl(215 30% 78%), hsl(226 24% 70%)); }
 body.tray-preview #root { display: flex; align-items: flex-end; justify-content: flex-end; min-height: 100vh; padding: 10px; box-sizing: border-box; }

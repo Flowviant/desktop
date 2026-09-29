@@ -52,7 +52,7 @@ describe('desktop contract', () => {
     expect(scripts['test:rust']).toBe('sh scripts/test-rust.sh');
     const runner = readFileSync(new URL('../scripts/test-rust.sh', import.meta.url), 'utf8');
     const loop = runner.match(/^for module in (.+); do$/m);
-    expect(loop?.[1].split(' ').sort()).toEqual(['daemon_output', 'notifications', 'setup_rules', 'supervisor_rules', 'updates', 'wsl']);
+    expect(loop?.[1].split(' ').sort()).toEqual(['autostart_rules', 'daemon_output', 'notifications', 'setup_rules', 'supervisor_rules', 'updates', 'wsl']);
     const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
     expect(ci).toMatch(/^\s+run: bun run test:rust$/m);
   });

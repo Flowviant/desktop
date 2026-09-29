@@ -8,8 +8,8 @@
 
 use std::time::{Duration, Instant};
 use tauri::{LogicalSize, PhysicalPosition, menu::{CheckMenuItem, Menu, MenuItem}, tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}, AppHandle, Emitter, Manager};
-use tauri_plugin_autostart::ManagerExt;
 
+use crate::autostart;
 use crate::uninstall::launch_uninstaller;
 use crate::{quit, Controller};
 
@@ -103,7 +103,10 @@ fn place_tray(app: &AppHandle, rect: tauri::Rect) {
 /// hides when it loses focus.
 pub(crate) fn install(app: &tauri::App) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Open Flowviant Machines", true, None::<&str>)?;
-    let login = CheckMenuItem::with_id(app, "login", "Start at login", true, app.autolaunch().is_enabled().unwrap_or(false), None::<&str>)?;
+    // Checked only when Windows has the entry; `autostart::set` keeps it in
+    // step with the window's switch.
+    let login = CheckMenuItem::with_id(app, "login", autostart::LABEL, true, autostart::registered(app.handle()) == Some(true), None::<&str>)?;
+    if let Ok(mut item) = app.state::<Controller>().login_item.lock() { *item = Some(login.clone()); }
     let uninstall_item = MenuItem::with_id(app, "uninstall", "Uninstall Flowviant…", true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &login, &uninstall_item, &quit_item])?;
@@ -111,7 +114,7 @@ pub(crate) fn install(app: &tauri::App) -> tauri::Result<()> {
         .menu(&menu).show_menu_on_left_click(false)
         .on_menu_event(move |app, event| match event.id().as_ref() {
             "open" => show_main_window(app),
-            "login" => { let auto = app.autolaunch(); if auto.is_enabled().unwrap_or(false) { let _ = auto.disable(); } else { let _ = auto.enable(); } let _ = login.set_checked(auto.is_enabled().unwrap_or(false)); },
+            "login" => { let _ = autostart::set(app, autostart::registered(app) != Some(true)); },
             "quit" => quit(app),
             "uninstall" => { if launch_uninstaller().is_ok() { quit(app); } },
             _ => (),

@@ -12,6 +12,8 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { Snapshot } from '../model';
 import { fixtures } from './fixtures';
 
@@ -210,6 +212,90 @@ describe('the window card', () => {
       fireEvent.click(screen.getByRole('switch', { name: 'checkout-service on this computer' }));
     });
     expect(bridge.invoke).toHaveBeenCalledWith('set_enabled', { id: 'checkout-service', enabled: false });
+  });
+});
+
+// START AT SIGN-IN IS A PERSON'S PRESS (2026-09-29, autostart_rules.rs): the
+// window offers it off, a press is what changes Windows, and the switch shows
+// what Windows then says. Launch writes nothing (pinned on the Rust side).
+describe('start at sign-in', () => {
+  const LABEL = 'Start Flowviant when I sign in to Windows';
+  /** The sign-in entry as Windows would answer it; a press changes it. */
+  function entry(value: boolean | null, refuse?: string) {
+    const base = bridge.invoke.getMockImplementation()!;
+    bridge.invoke.mockImplementation(async (command: string, args?: { on?: boolean }) => {
+      if (command === 'start_at_login') return value;
+      if (command === 'set_start_at_login') {
+        if (refuse) throw refuse;
+        value = args!.on!;
+        return value;
+      }
+      return base(command, args);
+    });
+  }
+  const toggle = () => screen.getByRole('switch', { name: LABEL });
+
+  it('is offered off in the window a first run opens, and only a press turns it on', async () => {
+    status = fixtures.empty;
+    entry(false);
+    render(<TrayPopover mode="window" />);
+    await screen.findByText('No project on this computer yet');
+    expect((await screen.findByRole('switch', { name: LABEL })).getAttribute('aria-checked')).toBe('false');
+    expect(screen.getByText('Off: projects on this computer start when you open Flowviant Machines.')).toBeTruthy();
+    expect(bridge.invoke).not.toHaveBeenCalledWith('set_start_at_login', expect.anything());
+    await act(async () => { fireEvent.click(toggle()); });
+    expect(bridge.invoke).toHaveBeenCalledWith('set_start_at_login', { on: true });
+    expect(toggle().getAttribute('aria-checked')).toBe('true');
+    expect(screen.queryByText(/^Off: projects/)).toBeNull();
+  });
+
+  it('shows an entry an older version made as on, and a press turns it off', async () => {
+    entry(true);
+    await mountWindow();
+    expect((await screen.findByRole('switch', { name: LABEL })).getAttribute('aria-checked')).toBe('true');
+    await act(async () => { fireEvent.click(toggle()); });
+    expect(bridge.invoke).toHaveBeenCalledWith('set_start_at_login', { on: false });
+    expect(toggle().getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('follows the tray menu item', async () => {
+    entry(false);
+    await mountWindow();
+    await screen.findByRole('switch', { name: LABEL });
+    await emit('start-at-login', true);
+    expect(toggle().getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('says a refused press in its words and keeps showing what Windows says', async () => {
+    entry(false, 'Windows did not change the sign-in entry: access denied');
+    await mountWindow();
+    await screen.findByRole('switch', { name: LABEL });
+    await act(async () => { fireEvent.click(toggle()); });
+    expect(screen.getByRole('alert').textContent).toContain('Windows did not change the sign-in entry');
+    expect(toggle().getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('draws no switch when Windows cannot say', async () => {
+    entry(null);
+    await mountWindow();
+    expect(bridge.invoke).toHaveBeenCalledWith('start_at_login');
+    expect(screen.queryByRole('switch', { name: LABEL })).toBeNull();
+  });
+
+  it('is the window\'s; the popover leaves it to the tray menu', () => {
+    render(<TrayPopover preview={fixtures.empty} mode="window" />);
+    expect(toggle().getAttribute('aria-checked')).toBe('false');
+    cleanup();
+    render(<TrayPopover preview={fixtures.serving} mode="tray" />);
+    expect(screen.queryByRole('switch', { name: LABEL })).toBeNull();
+    expect(bridge.invoke).not.toHaveBeenCalled();
+  });
+
+  it('wears the tray menu item\'s words', () => {
+    const rust = readFileSync(join(__dirname, '../../src-tauri/src/autostart.rs'), 'utf8');
+    expect(rust).toContain(`pub(crate) const LABEL: &str = "${LABEL}";`);
+    const tray = readFileSync(join(__dirname, '../../src-tauri/src/tray.rs'), 'utf8');
+    expect(tray).toMatch(/CheckMenuItem::with_id\(app, "login", autostart::LABEL,/);
   });
 });
 

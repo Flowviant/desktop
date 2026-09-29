@@ -47,6 +47,9 @@ export function useTrayController({ preview, mode = 'tray', previewFlow, preview
   const [expanded, setExpanded] = useState<'machines' | 'board' | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [setupFlow, setSetupFlow] = useState<SetupFlow | null>(null);
+  /** Start at sign-in, as Windows says it (autostart.rs). Off until a person
+   *  turns it on; `null` = Windows could not say, and no switch is drawn. */
+  const [startAtLogin, setStartAtLoginState] = useState<boolean | null>(preview ? false : null);
   const [now, setNow] = useState(Date.now());
   const card = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
@@ -158,6 +161,16 @@ export function useTrayController({ preview, mode = 'tray', previewFlow, preview
     return () => { active = false; void offVisible.then(off => off()); void offMachine.then(off => off()); void offStatus.then(off => off()); };
   }, [preview, windowed, refresh]);
 
+  // The window's switch reads the entry and hears the tray menu's item change it.
+  useEffect(() => {
+    if (preview || !windowed) return;
+    let active = true;
+    const read = (on: unknown) => { if (active) setStartAtLoginState(typeof on === 'boolean' ? on : null); };
+    void invoke<boolean | null>('start_at_login').then(read).catch(() => {});
+    const off = listen<boolean | null>('start-at-login', event => read(event.payload));
+    return () => { active = false; void off.then(stop => stop()); };
+  }, [preview, windowed]);
+
   useEffect(() => {
     if (!visible || preview) return;
     void invoke<string | null>('check_update', { force: false }).then(version => { if (version) setUpdate(version); }).catch(() => {});
@@ -232,6 +245,15 @@ export function useTrayController({ preview, mode = 'tray', previewFlow, preview
     catch (error) { setSetupFlow(current => current && { ...current, phase: 'error', message: String(error) }); }
   }
 
+  /** A person's press: Windows' answer is what the switch then shows. */
+  async function setStartAtLogin(on: boolean) {
+    if (preview) return;
+    try {
+      const now = await invoke<boolean | null>('set_start_at_login', { on });
+      setStartAtLoginState(typeof now === 'boolean' ? now : null);
+    } catch (error) { setNotice(String(error)); }
+  }
+
   function reopenConnect(code: string) {
     if (!preview) void invoke('open_connect_page', { code }).catch(error => setNotice(String(error)));
   }
@@ -250,7 +272,7 @@ export function useTrayController({ preview, mode = 'tray', previewFlow, preview
 
   return {
     windowed, snapshot, visible, flow, update, confirmUpdate, setConfirmUpdate, appVersion, checking,
-    switching, displaced, confirmQuit, setConfirmQuit, expanded, setExpanded, notice, now, card, content, setupFlow,
-    connect, checkNow, openProject, setEnabled, start, setupAction, setupCode, reopenConnect, installUpdate, quit, openLogs,
+    switching, displaced, confirmQuit, setConfirmQuit, expanded, setExpanded, notice, now, card, content, setupFlow, startAtLogin,
+    connect, checkNow, openProject, setEnabled, start, setupAction, setupCode, reopenConnect, installUpdate, quit, openLogs, setStartAtLogin,
   };
 }
