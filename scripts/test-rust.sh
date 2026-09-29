@@ -4,7 +4,7 @@
 # The rule modules below use nothing but std, so plain `rustc --test` builds
 # and runs their #[cfg(test)] cases (and the source pins they carry: the
 # notification policy's announcer pin, the supervisor's one-home bans, the
-# drain ban) on a box with no Tauri toolchain. `bun run test` in apps/desktop
+# drain ban) on a box with no Tauri toolchain. `bun run test` here
 # chains this after vitest, and CI runs it as its own step — so CI MUST have
 # rustc on PATH (ubuntu-latest ships it; the workflow prints its version).
 #
