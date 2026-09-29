@@ -4,9 +4,9 @@
   "version": "0.0.15",
   "identifier": "com.flowviant.desktop",
   "build": {
-    "beforeDevCommand": "npm run web:dev --workspace desktop",
+    "beforeDevCommand": "bun run web:dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run web:build --workspace desktop",
+    "beforeBuildCommand": "bun run web:build",
     "frontendDist": "../dist"
   },
   "app": {

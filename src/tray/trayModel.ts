@@ -1,4 +1,4 @@
-import { RUNTIME_LABEL, isAgentRuntime, projectTintIndex, versionOlderThan } from '@flowviant/shared';
+import { RUNTIME_LABEL, isAgentRuntime, projectTintIndex, versionOlderThan } from '../shared';
 import { rowState, type MachineEvent, type Project, type RemoteAgent, type Snapshot } from '../model';
 
 export type Fix =

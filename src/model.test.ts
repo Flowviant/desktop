@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseWslPath, reduceEvent, rowState, trayState, type Project } from './model';
 import { readFileSync } from 'node:fs';
-import { stripComments } from '@flowviant/shared/test/stripComments';
+import { stripComments } from './test/stripComments';
 
 const row = (running: boolean | null, holder: string | null): Project => ({ id: 'p', name: 'Project', dir: '/home/me/repo', distro: 'Ubuntu', running, holder, lastPoll: null, logFile: '', runtimes: [] });
 
@@ -44,8 +44,8 @@ describe('desktop contract', () => {
   });
   // The Rust halves of these pins run only if something runs rustc: the
   // desktop's `test` chains `test:rust` after vitest, the runner covers every
-  // std-only rule module, and CI runs it as its own step (the workspace suite
-  // is vitest alone). Pinned so the wiring cannot quietly fall off.
+  // std-only rule module, and CI (`.github/workflows/ci.yml`) runs it as its
+  // own step. Pinned so the wiring cannot quietly fall off.
   it('runs the Rust rule modules wherever desktop tests run', () => {
     const scripts = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).scripts;
     expect(scripts.test).toMatch(/&& bun run test:rust$/);
@@ -53,7 +53,7 @@ describe('desktop contract', () => {
     const runner = readFileSync(new URL('../scripts/test-rust.sh', import.meta.url), 'utf8');
     const loop = runner.match(/^for module in (.+); do$/m);
     expect(loop?.[1].split(' ').sort()).toEqual(['daemon_output', 'notifications', 'setup_rules', 'supervisor_rules', 'updates', 'wsl']);
-    const ci = readFileSync(new URL('../../../.github/workflows/ci.yml', import.meta.url), 'utf8');
-    expect(ci).toMatch(/^\s+\(cd apps\/desktop && bun run test:rust\)$/m);
+    const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+    expect(ci).toMatch(/^\s+run: bun run test:rust$/m);
   });
 });
