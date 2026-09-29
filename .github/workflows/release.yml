@@ -1,0 +1,319 @@
+# RELEASE: a `v*` tag builds Flowviant Machines on GitHub's Windows runners,
+# has SignPath sign it (certificate by SignPath Foundation), signs it for the
+# in-app updater, and attaches it to a GitHub Release. Publishing it to the
+# Flowviant download host (R2) is a separate, switched-off-by-default job.
+#
+#   test ─► build (windows) ─► updater ─► github-release ─► publish-r2 (optional)
+#
+# Two SignPath requests per release, because an NSIS installer cannot be
+# deep-signed: first the app executable (so the installer carries a signed
+# app), then the installer built around it.
+#
+# Nothing here uses a self-hosted runner or a cache: SignPath's origin
+# verification requires every job up to a signing request to run on
+# GitHub-hosted runners, and a release build restores nothing a branch
+# build could have written.
+#
+# SECRETS (repository → Settings → Secrets and variables → Actions):
+#   SIGNPATH_API_TOKEN                 the SignPath CI user's API token (submitter)
+#   TAURI_SIGNING_PRIVATE_KEY          the updater key file's CONTENT (minisign,
+#                                      pubkey in src-tauri/tauri.conf.json)
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD its password ('' today; leave unset)
+# In the `r2` environment, only for publish-r2:
+#   CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID
+# VARIABLES:
+#   PUBLISH_R2 = 'true'                turns publish-r2 on
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+env:
+  # ──────────────────────────────────────────────────────────────────────────
+  # PLACEHOLDERS — SignPath values, known once SignPath Foundation has set up
+  # the project. Replace every REPLACE-ME before the first tag; the build job
+  # refuses to start while one is left.
+  SIGNPATH_ORGANIZATION_ID: REPLACE-ME-signpath-organization-id
+  SIGNPATH_PROJECT_SLUG: REPLACE-ME-signpath-project-slug                # e.g. flowviant-desktop
+  SIGNPATH_SIGNING_POLICY_SLUG: REPLACE-ME-signpath-signing-policy-slug  # e.g. release-signing
+  SIGNPATH_APP_CONFIGURATION_SLUG: app-exe       # .signpath/artifact-configurations/app-exe.xml
+  SIGNPATH_INSTALLER_CONFIGURATION_SLUG: installer  # .signpath/artifact-configurations/installer.xml
+  # ──────────────────────────────────────────────────────────────────────────
+  # The daemon this installer carries comes from its own public repository's
+  # GitHub Release, at the version in src-tauri/resources/daemon-version.txt.
+  DAEMON_REPO: Flowviant/cli
+  BUN_VERSION: 1.3.13
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: test
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      # SignPath's GitHub connector reads this run's artifacts and metadata.
+      actions: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: The tag is the app's version
+        id: version
+        run: |
+          version=$(node -p 'require("./src-tauri/tauri.conf.json").version')
+          [ "$GITHUB_REF_NAME" = "v$version" ] || { echo "::error::tag $GITHUB_REF_NAME is not v$version (src-tauri/tauri.conf.json)"; exit 1; }
+          [ "$(node -p 'require("./package.json").version')" = "$version" ] || { echo "::error::package.json is not $version"; exit 1; }
+          grep -qx "version = \"$version\"" src-tauri/Cargo.toml || { echo "::error::src-tauri/Cargo.toml is not $version"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: SignPath is configured
+        env:
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+        run: |
+          for v in "$SIGNPATH_ORGANIZATION_ID" "$SIGNPATH_PROJECT_SLUG" "$SIGNPATH_SIGNING_POLICY_SLUG"; do
+            case "$v" in REPLACE-ME*) echo "::error::fill in the SignPath placeholders at the top of .github/workflows/release.yml ($v)"; exit 1 ;; esac
+          done
+          [ -n "$SIGNPATH_API_TOKEN" ] || { echo "::error::the SIGNPATH_API_TOKEN secret is not set"; exit 1; }
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Rust (MSVC, stable)
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+
+      - run: bun install --frozen-lockfile
+
+      # The daemon's release workflow attests each binary it builds; checking
+      # the attestation proves this file came from that workflow in DAEMON_REPO,
+      # and prepare-daemon then checks it against the release's manifest.json.
+      - name: Fetch the pinned daemon (Linux x64) from its GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          daemon=$(tr -d '[:space:]' < src-tauri/resources/daemon-version.txt)
+          mkdir -p daemon-dist
+          gh release download "v$daemon" --repo "$DAEMON_REPO" --dir daemon-dist \
+            --pattern manifest.json --pattern "flowviant-$daemon-linux-x64"
+          gh attestation verify "daemon-dist/flowviant-$daemon-linux-x64" --repo "$DAEMON_REPO"
+          gh attestation verify daemon-dist/manifest.json --repo "$DAEMON_REPO"
+
+      - name: Bundle the daemon (scripts/prepare-daemon.mjs checks its sha256)
+        env:
+          FLOWVIANT_CLI_DIST: daemon-dist
+        run: bun run prepare:daemon
+
+      # The front end (beforeBuildCommand) and the app, no installer yet:
+      # src-tauri/target/release/flowviant-desktop.exe
+      - name: Build the app
+        run: bunx tauri build --no-bundle
+
+      - name: Upload the unsigned app for SignPath
+        id: unsigned-app
+        uses: actions/upload-artifact@v7
+        with:
+          name: unsigned-app
+          path: src-tauri/target/release/flowviant-desktop.exe
+          if-no-files-found: error
+
+      - name: Sign the app (SignPath)
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ env.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ env.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ env.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ env.SIGNPATH_APP_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.unsigned-app.outputs.artifact-id }}
+          wait-for-completion: true
+          # A release-signing request waits for an approver's press.
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: signed-app
+          parameters: |
+            version: "${{ steps.version.outputs.version }}"
+
+      - name: Put the signed app where the bundler takes it
+        run: cp signed-app/flowviant-desktop.exe src-tauri/target/release/flowviant-desktop.exe
+
+      - name: The app's signature is valid
+        shell: pwsh
+        run: |
+          $s = Get-AuthenticodeSignature src-tauri/target/release/flowviant-desktop.exe
+          if ($s.Status -ne 'Valid') { throw "flowviant-desktop.exe: $($s.Status) $($s.StatusMessage)" }
+          $s.SignerCertificate.Subject
+
+      # NSIS, around the signed app. `tauri bundle` packages what `tauri build`
+      # built; it does not compile again. --no-binary-patching: by default the
+      # bundler rewrites the app in place to record its bundle type, which
+      # would break the signature just made. Only an app shipped as several
+      # bundle types per platform needs that record (the updater picks a
+      # `windows-x86_64-nsis` entry with it; ours is `windows-x86_64`).
+      - name: Build the installer
+        run: bunx tauri bundle --bundles nsis --no-binary-patching
+
+      - name: The app inside the installer is still signed
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe
+          7z x $setup.FullName -oinstaller-contents -y | Out-Null
+          $app = Get-ChildItem installer-contents -Recurse -Filter flowviant-desktop.exe | Select-Object -First 1
+          if (-not $app) { throw "flowviant-desktop.exe not found inside $($setup.Name)" }
+          $s = Get-AuthenticodeSignature $app.FullName
+          if ($s.Status -ne 'Valid') { throw "the installer's flowviant-desktop.exe: $($s.Status) $($s.StatusMessage)" }
+          $s.SignerCertificate.Subject
+
+      - name: Name the installer as the download does
+        run: |
+          set -- src-tauri/target/release/bundle/nsis/*-setup.exe
+          if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then echo "::error::expected one NSIS installer, found: $*"; exit 1; fi
+          mkdir -p unsigned-installer
+          cp "$1" "unsigned-installer/Flowviant-Machines-${{ steps.version.outputs.version }}-setup.exe"
+
+      - name: Upload the unsigned installer for SignPath
+        id: unsigned-installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: unsigned-installer
+          path: unsigned-installer/Flowviant-Machines-${{ steps.version.outputs.version }}-setup.exe
+          if-no-files-found: error
+
+      - name: Sign the installer (SignPath)
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ env.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ env.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ env.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ env.SIGNPATH_INSTALLER_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.unsigned-installer.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: signed-installer
+          parameters: |
+            version: "${{ steps.version.outputs.version }}"
+
+      - name: The installer's signature is valid
+        shell: pwsh
+        run: |
+          $f = "signed-installer/Flowviant-Machines-${{ steps.version.outputs.version }}-setup.exe"
+          $s = Get-AuthenticodeSignature $f
+          if ($s.Status -ne 'Valid') { throw "${f}: $($s.Status) $($s.StatusMessage)" }
+          $s.SignerCertificate.Subject
+
+      - name: Keep the signed installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: signed-installer
+          path: signed-installer/Flowviant-Machines-${{ steps.version.outputs.version }}-setup.exe
+          if-no-files-found: error
+
+  # The in-app updater's signature (minisign; tauri.conf.json holds the public
+  # key every installed tray checks) is made over the Authenticode-SIGNED bytes,
+  # in a job of its own so the key is never in the job that runs the build.
+  updater:
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      # Only for the Tauri CLI at the lockfile's version; no install scripts run.
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - uses: actions/download-artifact@v8
+        with:
+          name: signed-installer
+          path: release
+
+      - name: Sign for the updater and write latest.json
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] || { echo "::error::the TAURI_SIGNING_PRIVATE_KEY secret is not set"; exit 1; }
+          name="Flowviant-Machines-$VERSION-setup.exe"
+          bunx tauri signer sign -p "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" "release/$name" >/dev/null
+          # shellcheck disable=SC2016 # the ${…} below is JavaScript's, not the shell's
+          NAME="$name" SIG="$(cat "release/$name.sig")" bun -e '
+          const fs = require("node:fs");
+          const e = process.env;
+          fs.writeFileSync("release/latest.json", JSON.stringify({
+            version: e.VERSION,
+            notes: "",
+            pub_date: new Date().toISOString(),
+            platforms: { "windows-x86_64": { signature: e.SIG, url: `https://api.flowviant.com/dl/desktop/${e.NAME}` } },
+          }, null, 2) + "\n");
+          '
+          (cd release && sha256sum "$name" > SHA256SUMS)
+          ls -l release
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release
+          path: release/
+          if-no-files-found: error
+
+  github-release:
+    needs: [build, updater]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: release
+          path: release
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" release/* --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "Flowviant Machines $VERSION" \
+            --notes "Windows installer, signed by SignPath Foundation. Free code signing provided by SignPath.io, certificate by SignPath Foundation. Code signing policy: https://flowviant.com/code-signing. Built by this workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+  # Off until the repository variable PUBLISH_R2 is 'true'. Mirrors the old
+  # hand release: the installer first, its served bytes checked, latest.json
+  # LAST (every installed tray polls it), so an app is never told about an
+  # installer it cannot fetch. Put the Cloudflare secrets in the `r2`
+  # environment and add a required reviewer there to approve each publish.
+  publish-r2:
+    needs: [build, github-release]
+    if: vars.PUBLISH_R2 == 'true'
+    runs-on: ubuntu-latest
+    environment: r2
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: release
+          path: release
+      - name: Publish to the Flowviant download host
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: sh scripts/publish-r2.sh release

@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { PROJECT_TINT_COUNT, projectTintIndex } from '@flowviant/shared';
-import { stripComments } from '@flowviant/shared/test/stripComments';
+import { PROJECT_TINT_COUNT, projectTintIndex } from '../shared';
+import { stripComments } from '../test/stripComments';
 import { agentLine, deliveredLine, drainLine, elapsed, fixesFor, headerState, limitHeadline, machineFixes, machineLine, projectGroups, projectLine, projectTint, runtimeLabel, WSL_STOPPED } from './trayModel';
 import type { Project, RemoteAgent, Snapshot } from '../model';
 import { stateWord } from './trayModel';
@@ -83,12 +83,20 @@ describe('tray model', () => {
   });
 
   it('keeps no comparator, tint hash or runtime-name table of its own anywhere in the app', () => {
-    // One home each, in @flowviant/shared: "is this box behind"
+    // One home each, in `src/shared.ts` (copied from the app's shared package
+    // when the tray left the monorepo): "is this box behind"
     // (`versionOlderThan`), a project's tint (`projectTintIndex`) and a CLI's
     // name (`RUNTIME_LABEL`). Walks the whole desktop source tree, not one file:
     // a copy in the popover or the model is the same drift. Canary: the walk
-    // sees trayModel.ts, and it asks all three.
-    const files = raw.map(([f, src]) => [f, stripComments(src, f)] as const);
+    // sees trayModel.ts, and it asks all three; the home defines all three.
+    const home = 'shared.ts';
+    const all = raw.map(([f, src]) => [f, stripComments(src, f)] as const);
+    const shared = all.find(([f]) => f === home)?.[1] ?? '';
+    expect(shared).toContain('export function versionOlderThan(');
+    expect(shared).toContain('export function projectTintIndex(');
+    expect(shared).toContain('export const RUNTIME_LABEL');
+    expect(shared).toMatch(/\*\s*31\b/);
+    const files = all.filter(([f]) => f !== home);
     const model = files.find(([f]) => f === join('tray', 'trayModel.ts'))?.[1] ?? '';
     expect(model).toContain('versionOlderThan(');
     expect(model).toContain('projectTintIndex(');

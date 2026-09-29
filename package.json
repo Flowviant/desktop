@@ -1,6 +1,12 @@
 {
-  "name": "desktop",
+  "name": "flowviant-desktop",
   "version": "0.0.15",
+  "description": "Flowviant Machines: the Windows tray app that runs the Flowviant daemon in WSL.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Flowviant/desktop.git"
+  },
   "private": true,
   "type": "module",
   "scripts": {
@@ -14,7 +20,6 @@
     "test:rust": "sh scripts/test-rust.sh"
   },
   "dependencies": {
-    "@flowviant/shared": "*",
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/plugin-dialog": "^2.0.0",
     "react": "^18.2.0",
@@ -23,9 +28,10 @@
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",
     "@testing-library/react": "^14.2.0",
-    "@vitejs/plugin-react": "^4.2.0",
+    "@types/node": "^20.0.0",
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
+    "@vitejs/plugin-react": "^4.2.0",
     "autoprefixer": "^10.4.0",
     "jsdom": "^24.0.0",
     "postcss": "^8.4.0",

@@ -21,8 +21,9 @@ use crate::Controller;
 // ── Updating the app itself ──────────────────────────────────────────────────
 //
 // The app checks its manifest (`/dl/desktop/latest.json`, signed with the key in
-// tauri.conf.json) a minute after it starts and every six hours, and downloads a
-// newer installer in the background. It installs ON ITS OWN only when nothing is
+// tauri.conf.json) a minute after it starts, then hourly and on opening the card
+// (see UPDATE_CHECK_EVERY below), and downloads a newer installer in the
+// background. It installs ON ITS OWN only when nothing is
 // working on this computer: installing stops the daemons, and a turn cut off
 // mid-way is lost work. "Nothing working" is measured per project whose daemon
 // runs HERE, by that daemon itself (`busy` in its local `status --json`, see

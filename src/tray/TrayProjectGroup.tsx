@@ -11,7 +11,7 @@
 
 import type { RemoteAgent, SetupRoute, SetupStep } from '../model';
 import { Button } from '../ui/Button';
-import { RuntimeMark, rowButton } from './TrayParts';
+import { RuntimeMark, rowButton, Switch } from './TrayParts';
 import { agentLine, drainLine, elapsed, projectTint, runtimeLabel, stateWord, type Fix, type ProjectGroup } from './trayModel';
 import { setupForProject, TraySetup } from './TraySetup';
 import type { SetupFlow } from './useTrayController';
@@ -42,11 +42,7 @@ export function TrayProjectGroup({ group, index, on, now, onToggle, onOpen, onSt
     {group.idle && !group.inactive && !group.off && <span className="min-w-0 flex-1 truncate text-xs text-quiet">nothing running</span>}
     {/* ON/OFF PER PROJECT (2026-09-25): off stops this project's daemon and
         keeps it stopped, launch included; on starts it and keeps it running. */}
-    <button role="switch" aria-checked={on} aria-label={`${name} on this computer`} title={on ? 'On: this computer serves it' : 'Off: stopped here'}
-      className={`relative h-4 w-[26px] shrink-0 rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${on ? 'bg-ink' : 'bg-[hsl(220_14%_84%)]'}`}
-      onClick={() => onToggle(!on)}>
-      <span className={`absolute top-[2px] h-3 w-3 rounded-full bg-white shadow-sm transition-[left] ${on ? 'left-3' : 'left-[2px]'}`} />
-    </button>
+    <Switch on={on} label={`${name} on this computer`} title={on ? 'On: this computer serves it' : 'Off: stopped here'} onToggle={onToggle} />
     <button className="-mr-[6px] shrink-0 rounded-md px-[6px] py-px text-xs text-quiet hover:bg-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" onClick={() => onOpen('board')} aria-label={`Open ${name}'s board`}>Board →</button>
   </div>;
   return <section aria-label={name} className="flex flex-col">

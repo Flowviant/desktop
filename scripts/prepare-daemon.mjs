@@ -4,7 +4,10 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const desktop = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const candidates = [process.env.FLOWVIANT_CLI_DIST, '../../../desk-cli/dist', '../../../cli/dist', '../../cli/dist'].filter(Boolean);
+// FLOWVIANT_CLI_DIST: a folder holding the daemon release's manifest.json and
+// its linux-x64 binary (CI downloads both from the daemon's GitHub Release);
+// else a sibling checkout of the daemon repository that built its dist/.
+const candidates = [process.env.FLOWVIANT_CLI_DIST, '../cli/dist'].filter(Boolean);
 const source = candidates.map(path => resolve(desktop, path)).find(path => existsSync(resolve(path, 'manifest.json')));
 const target = resolve(desktop, 'src-tauri/resources/flowviant-linux-x64');
 if (source) {
@@ -19,5 +22,5 @@ if (source) {
   writeFileSync(resolve(dirname(target), 'daemon-version.txt'), `${manifest.version}\n`);
   console.log(`Bundled ${file.name}`);
 } else if (!existsSync(target)) {
-  throw new Error('Build the CLI release first (see apps/desktop/README.md) or set FLOWVIANT_CLI_DIST.');
+  throw new Error('Build the daemon release first (see README.md) or set FLOWVIANT_CLI_DIST.');
 }

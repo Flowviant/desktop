@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SignPath artifact configuration "app-exe": the tray's executable, signed
+  before the installer is built around it (.github/workflows/release.yml,
+  "Sign the app"). The GitHub artifact is a ZIP holding the one file.
+  A copy for review: SignPath reads the configuration stored in the SignPath
+  project, so a change here is made there too.
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <parameters>
+    <parameter name="version" required="true" />
+  </parameters>
+  <zip-file>
+    <pe-file path="flowviant-desktop.exe" product-name="Flowviant" product-version="${version}">
+      <authenticode-sign />
+    </pe-file>
+  </zip-file>
+</artifact-configuration>

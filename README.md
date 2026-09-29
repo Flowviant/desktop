@@ -1,45 +1,77 @@
-# Flowviant desktop
+# Flowviant Machines (Windows tray)
 
-Windows first: a Tauri 2 tray that bundles the Linux x64 daemon for projects in WSL. Pick `\\wsl$\<distro>\…` or `\\wsl.localhost\<distro>\…`. A Windows folder is declined and pointed at WSL: Flowviant stays Unix (2026-09-28). The tray starts at login by default (in the tray, via `--autostart`); opening the app yourself opens its window. The window and the tray popover are one card (the Machines App design, frames 1c/1d/1e). Connect a project picks the folder, then opens `app.flowviant.com/connect?code=…`, where you pick the project and approve; a failed login shows the daemon's own last words. Each project has an on/off switch on the card: off stops its daemon and keeps it stopped (launch included); on starts it and keeps it running. The app only runs `wsl.exe` against distros that are already running (`wsl --list --running` never boots one), so after `wsl --shutdown` nothing restarts WSL; a project whose distro stopped resumes when WSL does, or on Start. Closing the window hides it; Quit stops every daemon and closes the app — reopening starts the projects that are on. The app's own log (every start, exit, standby, retry, update, switch) is `%LOCALAPPDATA%\com.flowviant.desktop\logs\machines.log` (card › Open logs); each daemon's log is `flowviant logs` in WSL. Release builds are GUI-subsystem and start every `wsl.exe` with `CREATE_NO_WINDOW`, so no console window appears.
+The Windows app for [Flowviant](https://flowviant.com): a tray app that runs the Flowviant daemon ([Flowviant/cli](https://github.com/Flowviant/cli)) for projects that live in WSL. Built with [Tauri 2](https://v2.tauri.app) and a small React front end. MIT licensed.
+
+Flowviant stays Unix: the daemon is a Linux program, and this app is how a Windows computer runs it. The installer carries the daemon's Linux x64 build and puts it in each WSL distro it serves.
+
+**Download:** [flowviant.com/download](https://flowviant.com/download), or the installer attached to each [GitHub Release](https://github.com/Flowviant/desktop/releases). **[Code signing policy](https://flowviant.com/code-signing)** — free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+
+## What it does
+
+- **Connect a project.** Pick a folder under `\\wsl$\<distro>\…` or `\\wsl.localhost\<distro>\…`, and the app opens `app.flowviant.com/connect?code=…`, where you pick the project and approve. A Windows folder is declined and pointed at WSL. A failed login shows the daemon's own last words.
+- **Keep it running.** Each project has an on/off switch on the card: on starts its daemon and keeps it running; off stops it and keeps it stopped, launch included. The app only runs `wsl.exe` against distros that are already running (`wsl --list --running` never boots one), so after `wsl --shutdown` nothing restarts WSL; a project whose distro stopped resumes when WSL does, or on Start.
+- **Set up a new computer.** A checklist offers, each only when it is measured missing and one press each: Install WSL (Windows' own `wsl --install`), Open Ubuntu (its first-launch account), Install Claude Code (Anthropic's installer, in the distro), Sign in to Claude.
+- **Say what the machine is doing** — which projects it serves, what their agents are doing, a CLI limit, a daemon that is behind — in the window and in the tray popover (one card), with native notifications only for machine events.
+- **Update itself** (see *Releases and code signing*), installing only while no project this computer serves has a working agent.
+
+The app does not start at sign-in until you ask. **Start Flowviant when I sign in to Windows**, a switch in the window and the same words as a check item in the tray menu, adds the Windows startup entry (the app then starts in the tray, via `--autostart`) and removes it; it is off on a new install. An install that already starts at sign-in (0.0.15 and older turned it on the first time they ran) keeps it until you turn it off. Opening the app yourself opens its window. Closing the window hides it; Quit stops every daemon and closes the app. Release builds are GUI-subsystem and start every `wsl.exe` with `CREATE_NO_WINDOW`, so no console window appears.
+
+The app's own log (every start, exit, standby, retry, update, switch) is `%LOCALAPPDATA%\com.flowviant.desktop\logs\machines.log` (card › Open logs); each daemon's log is `flowviant logs` in WSL.
+
+### What it sends over the network
+
+On its own, only the update check: a minute after it starts, then hourly, and when you open its window or tray card if it has not checked in the last ten minutes, it downloads `https://api.flowviant.com/dl/desktop/latest.json`. Everything else follows a press: connecting a project opens `app.flowviant.com` in the browser, and from then on the daemon runs that project against `api.flowviant.com` under the project's credential; the setup checklist downloads WSL (Microsoft) and Claude Code's installer (Anthropic). The [code signing policy](https://flowviant.com/code-signing) has the full statement.
 
 ## Uninstall
 
-Windows Settings › Apps removes the tray app, stops its WSL daemons, and removes the binaries while keeping the login in `~/.flowviant` for a later install. Inside WSL, run `flowviant uninstall` (`--purge` removes everything). Newer installs remove older copies automatically.
+Windows Settings › Apps removes the app, stops its WSL daemons, and removes the daemon binaries while keeping the login in `~/.flowviant` for a later install. Inside WSL, `flowviant uninstall` (`--purge` removes everything). Newer installs remove older copies automatically.
 
-## Build the bundled daemon
+## Build
 
-In the CLI checkout, build the release binary with the same version used by the server:
+You need [Bun](https://bun.sh) 1.3, [Rust](https://www.rust-lang.org/tools/install) (the MSVC toolchain on Windows), and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) (Microsoft C++ Build Tools, WebView2).
 
 ```sh
-cd /path/to/cli
-scripts/build-binaries.sh
-cat dist/manifest.json
+bun install
+bun run typecheck
+bun run test        # vitest, then the std-only Rust rule modules (plain rustc)
 ```
 
-In this repository, `apps/desktop/scripts/prepare-daemon.mjs` copies and verifies `linux-x64` from the CLI release manifest into `src-tauri/resources/flowviant-linux-x64`. It looks for sibling `desk-cli/dist` or `cli/dist`; set `FLOWVIANT_CLI_DIST` if the checkout is elsewhere. The binary is ignored by Git; release builds must run the copy step. The installed WSL binary self-updates at its idle boundary.
+The installer carries the daemon's Linux x64 binary. `scripts/prepare-daemon.mjs` copies it into `src-tauri/resources/` from a folder holding a daemon release's `manifest.json` and `flowviant-<version>-linux-x64`, after checking the binary's SHA-256 against the manifest. Point `FLOWVIANT_CLI_DIST` at that folder — a download of the [Flowviant/cli release](https://github.com/Flowviant/cli/releases) at the version in `src-tauri/resources/daemon-version.txt`, or the `dist/` of a daemon checkout after its `scripts/build-binaries.sh` — or keep the daemon checkout beside this one (`../cli/dist`).
 
-## Windows development and NSIS release
-
-Install [Rust with the MSVC toolchain](https://v2.tauri.app/start/prerequisites/), [Bun](https://bun.sh/docs/installation), Microsoft C++ Build Tools, and [WebView2](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) on Windows. Enable WSL and install a distro with Git. Then:
+On Windows:
 
 ```powershell
-cd C:\path\to\flowviant
-bun install
-$env:FLOWVIANT_CLI_DIST = 'C:\path\to\cli\dist'
-bun run desktop:dev
-bun run desktop:build
+$env:FLOWVIANT_CLI_DIST = 'C:\path\to\cli-release'
+bun run dev      # the app, against the Vite dev server
+bun run build    # an unsigned NSIS installer under src-tauri\target\release\bundle\nsis
 ```
 
-The NSIS installer is under `apps/desktop/src-tauri/target/release/bundle/nsis`. It is unsigned. Verify on Windows by selecting a WSL Git checkout, completing browser login, starting and stopping it, checking Board/Machines/log links, then restarting Windows to check autostart. Use a second box with the same project credential to verify the displaced notification and no restart loop. Verify a CLI limit and an applied daemon update to check those two notifications.
+Verify a build on Windows by selecting a WSL Git checkout, completing the browser login, starting and stopping it, checking the Board/Machines/log links, then turning on **Start Flowviant when I sign in to Windows** and restarting Windows to check that it starts in the tray.
 
-For a Linux cross-build attempt, follow [Tauri's Windows installer guide](https://v2.tauri.app/distribute/windows-installer/): install NSIS, LLVM/lld, the MSVC Rust target, and `cargo-xwin`, then run `tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc` from `apps/desktop` after the daemon copy step. Windows is the release verification platform even if cross compilation succeeds.
+<details>
+<summary>Compile-checking from Linux</summary>
 
-The Linux cross-build WORKS (2026-09-24, Arch + nix). What it took, in order:
-1. Fetch the MSVC CRT OUTSIDE nix-shell (DNS fails inside it here): `~/.cargo/bin/cargo-xwin env --target x86_64-pc-windows-msvc` from `src-tauri` (cached in `~/.cache/cargo-xwin`).
-2. Build inside `nix-shell -p nsis llvmPackages.bintools llvmPackages.clang-unwrapped pkg-config libayatana-appindicator gtk3` with `PATH=$HOME/.cargo/bin:$PATH` and `CL='-imsvc<clang-lib>/lib/clang/16/include'` (the unwrapped clang has no builtin headers; `nix-build '<nixpkgs>' -A llvmPackages.clang-unwrapped.lib`). gtk3 is needed only because the Tauri CLI's appindicator probe runs `pkg-config` on the host.
-3. nix's NSIS is 3.06: make a writable NSIS dir (copy of its `share/nsis`, plus `Include/` from Tauri's nsis-3.11 zip, plus `ApplicationID.dll` (NSIS-ApplicationID 1.1, ReleaseUnicode) and `nsis_tauri_utils.dll` in `Plugins/x86-unicode`), then run `NSISDIR=<that dir> makensis installer.nsi` in `target/x86_64-pc-windows-msvc/release/nsis/x64` — the Tauri CLI's own makensis call does not pick the dir up.
-Output: `nsis-output.exe` (~30 MB with the bundled daemon). Windows remains the release verification platform.
+With [`cargo-xwin`](https://github.com/rust-cross/cargo-xwin), the MSVC Rust target and LLVM (`clang-cl`, `llvm-lib`, `lld-link`): `bun run web:build`, put the daemon in place (`bun run prepare:daemon`), then `cargo xwin check --target x86_64-pc-windows-msvc` in `src-tauri`. A full cross-build also needs NSIS 3.11 with Tauri's plugins; see [Tauri's Windows installer guide](https://v2.tauri.app/distribute/windows-installer/). Releases are never made this way.
 
-## Updater signing key
+</details>
 
-The public key is in `src-tauri/tauri.conf.json`; the private key belongs at `~/.flowviant-desktop-updater.key` outside this repository. Its password is empty. Set `TAURI_SIGNING_PRIVATE_KEY_PATH` to that path for release builds. Keep the key private and backed up. The app checks `https://api.flowviant.com/dl/desktop/latest.json` a minute after it starts and every six hours, downloads a newer installer in the background, and installs it (passive, `/UPDATE`, relaunching with its own arguments) only when no project this computer serves has a working agent; the card also offers a confirmed "Restart now". Publish a build with `sh scripts/release-windows.sh` (signs with this key, uploads the installer, checks the served bytes, then writes the manifest last).
+## Releases and code signing
+
+Releases are built only by [`.github/workflows/release.yml`](.github/workflows/release.yml), on GitHub-hosted Windows runners, from a `v*` tag that matches the version in `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` and `package.json`:
+
+1. the tests run ([`ci.yml`](.github/workflows/ci.yml));
+2. the daemon's Linux binary is downloaded from the pinned Flowviant/cli GitHub Release (`src-tauri/resources/daemon-version.txt`), its build attestation checked, and its SHA-256 checked against that release's manifest;
+3. the app is built, then **signed through [SignPath](https://about.signpath.io)** with a certificate issued to **SignPath Foundation**; the NSIS installer is built around the signed app, then signed the same way (two signing requests, because an NSIS installer cannot be signed inside; the artifact configurations are copied in [`.signpath/`](.signpath/artifact-configurations));
+4. the signed installer is signed again for the in-app updater (minisign; the public key is in `src-tauri/tauri.conf.json`), and `latest.json` is written;
+5. the installer, its `.sig`, `latest.json` and `SHA256SUMS` are attached to a GitHub Release;
+6. optionally (repository variable `PUBLISH_R2`), [`scripts/publish-r2.sh`](scripts/publish-r2.sh) puts the installer on the Flowviant download host, checks the served bytes, and writes `latest.json` last — the manifest every installed app polls.
+
+The updater's private key is a repository secret and never leaves GitHub Actions. Lose it and installed apps can no longer update themselves. [CODE_SIGNING.md](CODE_SIGNING.md) summarizes the signing policy.
+
+## Font
+
+The interface is set in [Geist](https://vercel.com/font), by Vercel in collaboration with basement.studio, under the [SIL Open Font License 1.1](public/fonts/OFL.txt). The variable font and its licence are in `public/fonts/` and ship inside the app together; Windows' Segoe UI is only the fallback.
+
+## License
+
+MIT — see [LICENSE](LICENSE). The bundled Geist font is under the SIL Open Font License 1.1 ([`public/fonts/OFL.txt`](public/fonts/OFL.txt)).

@@ -1,3 +1,10 @@
 /src-tauri/resources/flowviant-linux-x64
 /src-tauri/target/
 /src-tauri/gen/
+/node_modules/
+/dist/
+/daemon-dist/
+/signed-*/
+/unsigned-*/
+/release/
+/installer-contents/

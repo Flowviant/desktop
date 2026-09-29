@@ -1,0 +1,33 @@
+# Every push and pull request: typecheck, the TypeScript tests, and the tray's
+# std-only Rust rule modules. The release workflow runs this first, too.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bunx vitest run
+      # The tray's std-only Rust modules and the source pins they carry
+      # (scripts/test-rust.sh): plain rustc, no Tauri toolchain. ubuntu-latest
+      # ships rustc. `src/model.test.ts` pins that this step exists.
+      - name: Test (tray Rust rules, plain rustc)
+        run: rustc --version
+      - name: Run the Rust rule tests
+        run: bun run test:rust
