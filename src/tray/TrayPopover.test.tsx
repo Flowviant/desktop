@@ -43,7 +43,7 @@ beforeEach(() => {
   bridge.invoke.mockReset();
   bridge.invoke.mockImplementation(async (command: string) => {
     if (command === 'status') return status;
-    if (command === 'app_version') return '0.0.14';
+    if (command === 'app_version') return '0.0.15';
     if (command === 'pending_update' || command === 'check_update') return null;
     return undefined;
   });
